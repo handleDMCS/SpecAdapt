@@ -1,0 +1,20 @@
+# Environment & Secrets (NEVER push these)
+.env
+.env.*
+*.json
+
+# Virtual Environment & Python cache
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local outputs & experiment logs
+results/
+*.txt
+
+# OS / Editor temporary files
+.DS_Store
+Thumbs.db
+.vscode/
