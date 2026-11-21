@@ -1,0 +1,260 @@
+"""Submit root-relative Python scripts to one Kaggle session, in argument order."""
+
+import argparse
+import ast
+import base64
+from datetime import datetime, timezone
+import hashlib
+import io
+import json
+import math
+import os
+from pathlib import Path, PureWindowsPath
+import re
+import shutil
+import sys
+import tempfile
+import time
+import tokenize
+from urllib.parse import urlparse
+import zipfile
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__"}
+
+
+def root_file(filename: str, root: Path = PROJECT_ROOT) -> Path:
+    if Path(filename).is_absolute() or PureWindowsPath(filename).drive:
+        raise ValueError(f"Use a path relative to the project root: {filename}")
+    path = (root / filename.replace("\\", "/")).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise ValueError(f"Missing file or path outside the project: {filename}")
+    return path
+
+
+def get_api():
+    from dotenv import load_dotenv
+
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    from kaggle.api.kaggle_api_extended import KaggleApi
+
+    api = KaggleApi()
+    api.authenticate()
+    return api
+
+
+def read_metadata(filename: str, cpu: bool = False) -> dict:
+    metadata = json.loads(root_file(filename).read_text(encoding="utf-8-sig"))
+    if not re.fullmatch(r"[\w-]+/[\w-]+", metadata.get("id", "")):
+        raise ValueError("kernel-metadata.json needs an id in owner/kernel-slug format.")
+    metadata.update(code_file="submission.py", language="python", kernel_type="script")
+    metadata.pop("id_no", None)
+    if cpu:
+        metadata.update(enable_gpu=False, enable_tpu=False)
+        metadata.pop("machine_shape", None)
+    return metadata
+
+
+def ready_cache_sources(api, root: Path, owner: str) -> list[str]:
+    from demo.assets import cache_assets, load_plan, wait_cache_ready
+
+    plan_path = root / "asset_plan.toml"
+    if not plan_path.exists():
+        return []
+    expected = {f"{owner}/{asset['slug']}" for asset in cache_assets(load_plan(plan_path))}
+    found = set()
+    page = 1
+    while True:
+        datasets = api.dataset_list(mine=True, search="specadapt", page=page) or []
+        if not datasets:
+            break
+        found.update(dataset.ref for dataset in datasets if dataset is not None)
+        page += 1
+    sources = []
+    for ref in sorted(expected & found):
+        wait_cache_ready(api, ref)
+        sources.append(ref)
+    return sources
+
+
+def build_submission(root: Path, scripts: list[str], timestamp: str, owner: str) -> tuple[str, dict]:
+    normalized, hashes = [], {}
+    for filename in scripts:
+        path = root_file(filename, root)
+        if path.suffix.lower() != ".py":
+            raise ValueError(f"Expected a Python script: {filename}")
+        with tokenize.open(path) as stream:
+            compile(stream.read(), str(path), "exec")
+        relative = path.relative_to(root).as_posix()
+        normalized.append(relative)
+        hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    submission = {"timestamp": timestamp, "scripts": normalized,
+                  "script_sha256": hashes, "cache_owner": owner}
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for folder, dirs, filenames in os.walk(root):
+            dirs[:] = sorted(name for name in dirs if name not in EXCLUDED_DIRS and not name.startswith(".")
+                             and not (Path(folder) / name).is_symlink())
+            for name in sorted(filenames):
+                path = Path(folder) / name
+                if not name.startswith(".") and not path.is_symlink() and path.suffix.lower() in {".py", ".toml"}:
+                    archive.write(path, path.relative_to(root).as_posix())
+        runtime = PROJECT_ROOT / "src/demo/kaggle_runtime.py"
+        if "src/demo/kaggle_runtime.py" not in archive.namelist():
+            archive.write(runtime, "src/demo/kaggle_runtime.py")
+            archive.writestr("src/demo/__init__.py", "")
+        missing = set(normalized) - set(archive.namelist())
+        if missing:
+            raise ValueError(f"Scripts are in excluded directories: {sorted(missing)}")
+    encoded = base64.b64encode(payload.getvalue()).decode("ascii")
+    source = (
+        "import base64, io, json, sys, tempfile, zipfile\n"
+        "from pathlib import Path\n"
+        f"_submission = json.loads({json.dumps(submission)!r})\n"
+        "with tempfile.TemporaryDirectory(prefix='specadapt-project-') as _directory:\n"
+        "    _root = Path(_directory)\n"
+        f"    with zipfile.ZipFile(io.BytesIO(base64.b64decode({encoded!r}))) as _bundle:\n"
+        "        _bundle.extractall(_root)\n"
+        "    sys.path.insert(0, str(_root / 'src'))\n"
+        "    from demo.kaggle_runtime import run_submission\n"
+        "    run_submission(_root, _submission)\n"
+    )
+    return source, submission
+
+
+def wait_for_run(api, kernel: str, poll_interval: float, wait_timeout: float) -> str:
+    deadline = time.monotonic() + wait_timeout
+    previous = None
+    while time.monotonic() < deadline:
+        response = api.kernels_status(kernel)
+        status = getattr(response.status, "name", str(response.status)).lower()
+        if status != previous:
+            print(f"Kaggle: {status}", flush=True)
+            previous = status
+        if status in {"complete", "error", "cancelled", "canceled"}:
+            return status
+        if status not in {"queued", "running"}:
+            raise RuntimeError(f"Unexpected Kaggle status: {status}")
+        time.sleep(poll_interval)
+    raise TimeoutError(f"Stopped waiting for {kernel}; the remote job may still be running.")
+
+
+def kernel_ref(ref: str, fallback: str) -> str:
+    path = urlparse(ref).path.strip("/")
+    if path.startswith("code/"):
+        path = path.removeprefix("code/")
+    return path if re.fullmatch(r"[\w-]+/[\w-]+", path) else fallback
+
+
+def fetch_result(api, kernel: str, submission: dict, status: str, destination: Path) -> tuple[Path, dict]:
+    filename = f"submission-{submission['timestamp']}.zip"
+    destination.mkdir(parents=True, exist_ok=True)
+    result = destination / filename
+    with tempfile.TemporaryDirectory(prefix="specadapt-result-") as temporary:
+        api.kernels_output(kernel, temporary, file_pattern=f"^{re.escape(filename)}$", quiet=True)
+        downloaded = Path(temporary) / filename
+        if downloaded.is_file():
+            with zipfile.ZipFile(downloaded) as archive:
+                report = json.loads(archive.read("submission.json"))
+            if report.get("timestamp") != submission["timestamp"]:
+                raise RuntimeError("Kaggle returned a different submission's result.")
+            shutil.copyfile(downloaded, result)
+        else:
+            if status == "complete":
+                raise RuntimeError("Kaggle completed without this submission's result archive.")
+            report = {**submission, "status": "platform_error", "kaggle_status": status}
+            with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("submission.json", json.dumps(report, indent=2))
+                logs = "\n".join(path.read_text(encoding="utf-8", errors="replace")
+                                  for path in Path(temporary).glob("*.log"))
+                archive.writestr("run.log", logs or f"Kaggle job ended with status: {status}\n")
+    return result, report
+
+
+def positive_number(value: str) -> float:
+    number = float(value)
+    if number <= 0 or not math.isfinite(number):
+        raise argparse.ArgumentTypeError("Value must be a positive finite number.")
+    return number
+
+
+def staged_submission(stage: Path) -> dict:
+    report_path = stage / "submission.json"
+    if report_path.is_file():
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    # Recover older staged runs without executing the generated source.
+    tree = ast.parse((stage / "submission.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "_submission"
+                                                for target in node.targets):
+            return json.loads(ast.literal_eval(node.value.args[0]))
+    raise ValueError(f"No submission record in {stage}.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("scripts", nargs="*", help="Python files relative to the root; executed in this order")
+    parser.add_argument("--resume", help="Resume waiting/downloading a previously submitted UTC timestamp")
+    parser.add_argument("--metadata", default="kernel-metadata.json", help="Root-relative Kaggle metadata file")
+    parser.add_argument("--cpu", action="store_true", help="Run without a GPU (recommended for preparation/tests)")
+    parser.add_argument("--dry-run", action="store_true", help="Stage and validate; do not contact Kaggle")
+    parser.add_argument("--no-cache", action="store_true", help="Skip automatic attachment of experiment caches")
+    parser.add_argument("--dataset", action="append", default=[], help="Additional owner/dataset-slug input (repeatable)")
+    parser.add_argument("--poll-interval", type=positive_number, default=10)
+    parser.add_argument("--wait-timeout", type=positive_number, default=50400, help="Maximum wait in seconds")
+    args = parser.parse_args(argv)
+    if bool(args.scripts) == bool(args.resume):
+        parser.error("Supply scripts, or --resume TIMESTAMP, but not both.")
+    try:
+        if args.resume:
+            if not re.fullmatch(r"\d{8}T\d{12}Z", args.resume):
+                raise ValueError("Invalid submission timestamp.")
+            stage = PROJECT_ROOT / "build/submissions" / args.resume
+            submission = staged_submission(stage)
+            metadata = json.loads((stage / "kernel-metadata.json").read_text(encoding="utf-8"))
+            timestamp = submission["timestamp"]
+            api = None if args.dry_run else get_api()
+        else:
+            metadata = read_metadata(args.metadata, args.cpu)
+            owner = metadata["id"].split("/")[0]
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            source, submission = build_submission(PROJECT_ROOT, args.scripts, timestamp, owner)
+            api = None if args.dry_run else get_api()
+            caches = [] if args.no_cache or api is None else ready_cache_sources(api, PROJECT_ROOT, owner)
+            metadata["dataset_sources"] = list(dict.fromkeys([*metadata.get("dataset_sources", []), *caches, *args.dataset]))
+            stage = PROJECT_ROOT / "build/submissions" / timestamp
+            stage.mkdir(parents=True)
+            (stage / "submission.py").write_text(source, encoding="utf-8")
+            (stage / "submission.json").write_text(json.dumps(submission, indent=2), encoding="utf-8")
+            (stage / "kernel-metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        print(f"Submission (UTC): {timestamp}")
+        print(f"Scripts: {' -> '.join(submission['scripts'])}")
+        print(f"Attached inputs: {len(metadata['dataset_sources'])}")
+        if args.dry_run:
+            print(f"Dry run staged at: {stage}")
+            return 0
+        kernel = metadata["id"].lower()
+        if not args.resume:
+            response = api.kernels_push(str(stage))
+            invalid = [*response.invalid_dataset_sources, *response.invalid_kernel_sources,
+                       *response.invalid_competition_sources, *response.invalid_model_sources]
+            if response.error or invalid:
+                raise RuntimeError(f"Kaggle rejected submission: {response.error or invalid}")
+            kernel = kernel_ref(response.ref, kernel)
+            print(f"Submitted {kernel}, version {response.version_number}", flush=True)
+        status = wait_for_run(api, kernel, args.poll_interval, args.wait_timeout)
+        result, report = fetch_result(api, kernel, submission, status, PROJECT_ROOT / "results")
+        with zipfile.ZipFile(result) as archive:
+            print(archive.read("run.log").decode("utf-8", errors="replace"))
+        print(f"Result: {result}")
+        return 0 if status == "complete" and report["status"] == "complete" else 1
+    except (Exception, KeyboardInterrupt) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

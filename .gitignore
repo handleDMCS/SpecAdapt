@@ -12,6 +12,8 @@ __pycache__/
 
 # Local outputs & experiment logs
 results/
+build/
+logs/
 *.txt
 
 # OS / Editor temporary files

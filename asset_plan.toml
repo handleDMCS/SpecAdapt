@@ -1,0 +1,63 @@
+# Exact Hugging Face revisions for notes/experiment.md.
+# Dataset revisions point to the Parquet export, avoiding dataset loader scripts.
+
+[[models]]
+key = "llama_68m"
+repo = "JackFram/llama-68m"
+revision = "9de84537b6aa98de634ad0fbb1608e9d6a019355"
+files = ["README.md", "config.json", "generation_config.json", "pytorch_model.bin", "special_tokens_map.json", "tokenizer.model", "tokenizer_config.json"]
+
+[[models]]
+key = "llama_160m"
+repo = "JackFram/llama-160m"
+revision = "aca9b687d1425f863dcf5de9a4c96e3fe36266dd"
+files = ["README.md", "config.json", "generation_config.json", "model.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer.model", "tokenizer_config.json"]
+
+[[models]]
+key = "vicuna_7b"
+repo = "lmsys/vicuna-7b-v1.5"
+revision = "3321f76e3f527bd14065daf69dad9344000a201d"
+files = ["README.md", "config.json", "generation_config.json", "pytorch_model-00001-of-00002.bin", "pytorch_model-00002-of-00002.bin", "pytorch_model.bin.index.json", "special_tokens_map.json", "tokenizer.model", "tokenizer_config.json"]
+
+[[models]]
+key = "qwen_7b"
+repo = "Qwen/Qwen2.5-7B-Instruct"
+revision = "a09a35458c702b33eeacc393d103063234e8bc28"
+files = ["LICENSE", "README.md", "config.json", "generation_config.json", "merges.txt", "model-00001-of-00004.safetensors", "model-00002-of-00004.safetensors", "model-00003-of-00004.safetensors", "model-00004-of-00004.safetensors", "model.safetensors.index.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
+
+[[models]]
+key = "llama_31_8b"
+repo = "meta-llama/Llama-3.1-8B-Instruct"
+revision = "0e9e39f249a16976918f6564b8830bc894c89659"
+gated = true
+files = ["LICENSE", "README.md", "USE_POLICY.md", "config.json", "generation_config.json", "model-00001-of-00004.safetensors", "model-00002-of-00004.safetensors", "model-00003-of-00004.safetensors", "model-00004-of-00004.safetensors", "model.safetensors.index.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]
+
+[[datasets]]
+key = "gsm8k"
+repo = "openai/gsm8k"
+revision = "a05f38c23a0e9ab0b71de8a2b4947e20f74f68f7"
+files = ["main/train/0000.parquet", "main/test/0000.parquet"]
+
+[[datasets]]
+key = "humaneval"
+repo = "openai/openai_humaneval"
+revision = "c4dedfa884e8add4c679789be33fe7147d318ca2"
+files = ["openai_humaneval/test/0000.parquet"]
+
+[[datasets]]
+key = "mbpp"
+repo = "google-research-datasets/mbpp"
+revision = "f7f18be5a72d664e3884261303eb5b7f01dd10c2"
+files = ["full/prompt/0000.parquet", "full/test/0000.parquet", "full/train/0000.parquet", "full/validation/0000.parquet"]
+
+[[datasets]]
+key = "alpaca"
+repo = "tatsu-lab/alpaca"
+revision = "3483b222444e0d1e807e24178d720f80ee6a121a"
+files = ["default/train/0000.parquet"]
+
+[[datasets]]
+key = "xsum"
+repo = "EdinburghNLP/xsum"
+revision = "03339c27cd655c3369346bacb533293f222a9d42"
+files = ["default/test/0000.parquet", "default/train/0000.parquet", "default/validation/0000.parquet"]

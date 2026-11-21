@@ -579,12 +579,16 @@ wheels = [
 name = "specadapt"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
+
+[package.dev-dependencies]
+dev = [
     { name = "kaggle" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "kaggle", specifier = ">=2.2.4" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "kaggle", specifier = ">=2.2.4" }]
 
 [[package]]
 name = "text-unidecode"

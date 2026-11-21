@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from specadapt!")
+"""Reusable draft-side adaptation for speculative decoding."""

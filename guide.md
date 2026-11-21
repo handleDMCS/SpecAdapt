@@ -1,91 +1,134 @@
-**Overview**
-tl;dr: You build and test the tool on your laptop, commit it, then a single Kaggle command runs that exact commit on a GPU and you pull the results back.
+# PowerShell setup and Kaggle workflow
 
-**Laptop: Build & Test**
-**tl;dr**: You write the code and run quick, free checks on your own computer.
+Use PowerShell 5.1 or PowerShell 7. The laptop manages files, credentials, submissions and result downloads. Scripts, model downloads and tests execute on Kaggle.
 
-**Why**: All logic gets built and debugged here, before any GPU time is spent.
+## Local setup
 
-**Input**:
-```
-- The plan for what the tool should do
-- Small free stand-in models for testing
-- A settings file (config)
-```
+Git and uv are installed. The Windows environment is already configured:
 
-**Output**:
-```
-- Working code
-- A passing local test run
-- A tiny results file from a quick test run
+```powershell
+Set-Location -LiteralPath "F:\SpecAdapt"
+$env:PYTHONUTF8 = "1"
+uv sync --locked
+if ($LASTEXITCODE -ne 0) { throw "Dependency setup failed." }
 ```
 
-**Technical keywords**: uv, pytest, CPU-only torch, pyproject.toml
+Python 3.12 and the Kaggle dependency are pinned by the project. `uv run` uses the environment without activation or an execution-policy change.
 
-**Commit & Push: Pin the Version**
-**tl;dr**: You save your code as one labeled snapshot and upload it to GitHub.
+## Credentials
 
-**Why**: Gives the GPU machine one exact, fetchable version of the code, so every result traces back to it.
+Keep `KAGGLE_API_TOKEN` in the ignored local `.env`. The runner loads that file from the project root, even when launched from another working directory. Local authentication can be checked with:
 
-**Input**:
-```
-- Code that passed your local tests
-```
-
-**Output**:
-```
-- A timestamped snapshot with a unique ID
-- A copy of that snapshot online
+```powershell
+uv run --locked --env-file .env kaggle kernels list -m
+if ($LASTEXITCODE -ne 0) { throw "Kaggle authentication failed." }
 ```
 
-**Technical keywords**: git commit, git push, commit SHA
+The remote preparation script also needs `KAGGLE_API_TOKEN` to publish private cache datasets. Kaggle CLI pushes do not carry Add-ons secret attachments. For a browser-started initialization, open the configured notebook, enable the secrets under **Add-ons → Secrets**, and use **Save Version → Save & Run All** on the already-uploaded preparation code. Local `.env` files and tokens are not bundled.
 
-**Kaggle: Run on GPU**
-**tl;dr**: One command tells a cloud GPU machine to download your snapshot and run the real experiment.
+For Llama 3.1, use an `HF_TOKEN` or `HUGGING_FACE_TOKEN` secret with approved access to `meta-llama/Llama-3.1-8B-Instruct`. Missing credentials or denied access leave this model pending while other assets are prepared. Existing cached models do not need Hugging Face credentials to be read.
 
-**Why**: The slow, heavy computing happens here, on a snapshot you already tested locally.
+For CLI-only initialization, a separately authorized private credential dataset can supply the tokens: attach it with `--dataset owner/specadapt-run-credentials`. This is optional and stores actual token values in that private input until removed; it is never created automatically by the submission runner. The preparation script checks publishing credentials before large downloads begin.
 
-**Input**:
-```
-- The snapshot ID
-- The settings file for this run
-- A secret access key (only for restricted models)
-```
+## Submit Python scripts
 
-**Output**:
-```
-- Raw results from the experiment
-- A record of which code and settings made them
+```powershell
+uv run python -m demo.kaggle_run src/demo/check_cuda.py
+if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result archive." }
+
+# Replace these names with your root-relative script paths.
+uv run python -m demo.kaggle_run first.py second.py
+if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result archive." }
 ```
 
-**Technical keywords**: kaggle kernels push, kernel-metadata.json, HF_TOKEN, T4 GPU
+The argument order determines execution order. All scripts run in the same Python process and share globals, imports, variables and model instances. Main blocks run normally. Errors stop subsequent scripts and are recorded in the combined log.
 
-**Fetch: Bring Results Home**
-**tl;dr**: You download the finished results file from the cloud machine to your laptop.
+The runner snapshots Python files and TOML configuration into an ignored `build\submissions\<timestamp>` directory. It uploads one generated script with that snapshot embedded, polls Kaggle, and downloads one result archive.
 
-**Why**: Closes the loop so you can inspect and compare results locally.
+The staged metadata uses the ID and compute settings from `kernel-metadata.json`; its `code_file` is replaced by the generated submission script. `--cpu` disables GPUs for the staged run without editing your metadata file.
 
-**Input**:
-```
-- A completed cloud run
-```
+Relative paths in submitted code refer to the bundled project root. New or changed files are collected as output. Explicit writes under `/kaggle/working` are collected into the same archive. Persistent model storage is kept outside these output folders.
 
-**Output**:
-```
-- A local results file, labeled by time and tied to its snapshot ID
+## Initialize and reuse the cache
+
+```powershell
+uv run python -m demo.kaggle_run --cpu src/demo/prepare_data.py
+if ($LASTEXITCODE -ne 0) { throw "Preparation failed; inspect the returned log." }
 ```
 
-**Technical keywords**: kaggle kernels output
+The preparation script follows `asset_plan.toml`: five models and five dataset sources representing the four tasks in the experiment plan. Source revisions are exact commit hashes. Dataset downloads use Parquet exports, including full MBPP rather than its sanitized subset.
 
-**Hackathon commands** (copy-paste loop):
-```bash
-uv run pytest -q                                # 1. test locally
-git add -A && git commit -m "run" && git push   # 2. pin version
-kaggle kernels push -p .                        # 3. run on GPU
-kaggle kernels status <user>/<slug>             # 4. poll until "complete"
-kaggle kernels output <user>/<slug> -p results/$(git rev-parse --short HEAD)   # 5. fetch
+The first run downloads missing assets into Kaggle's temporary storage and publishes private Kaggle Datasets. These persist independently of notebook sessions. The CLI finds the matching caches and attaches them on later submissions. It never transfers weights or datasets through the laptop.
+
+Run the same command again to check mounted cache manifests, file sizes, model paths and actual per-split/total row counts. A complete cache hit does not require Hugging Face or publishing credentials. Interrupted initialization can reuse assets that were already published.
+
+Prepare the cache and then run an experiment in one session:
+
+```powershell
+uv run python -m demo.kaggle_run src/demo/prepare_data.py your_experiment.py
 ```
 
-**Two things to watch:**
-- Have the Kaggle kernel script run `git clone <repo> && git checkout <SHA>`. Without that, it won't run the pinned commit.
-- Pass the SHA in via an env var or by editing the script before `kaggle kernels push`.
+The experiment receives the shared `MODEL_PATHS`, `DATASET_PATHS`, `DATASET_ROWS`, `PENDING_MODELS` and `CACHE_COMPLETE` values. The first-run paths point to temporary downloads; subsequent runs point to attached cache directories. Do not modify attached files.
+
+This prepares source data only. Test/calibration subsets and model execution belong in later experiment scripts.
+
+## One result file per submission
+
+Each submission returns `results\submission-<UTC-submission-timestamp>.zip`:
+
+- `run.log`: stdout, stderr, subprocess output and tracebacks in execution order.
+- `submission.json`: script order, content hashes, timing and status.
+- `outputs/`: files produced by the scripts.
+
+For example, the GPU check's `cuda_spec.txt` is inside `outputs/`. The CLI prints the combined log. If a script fails, the result archive is still saved and the CLI returns a nonzero exit code.
+
+Read the archive directly or extract it with PowerShell when needed:
+
+```powershell
+$latestResult = Get-ChildItem -LiteralPath .\results -Filter "submission-*.zip" |
+    Sort-Object Name -Descending | Select-Object -First 1
+if ($null -eq $latestResult) { throw "No submission result found." }
+$extractedDirectory = Join-Path "results" $latestResult.BaseName
+Expand-Archive -LiteralPath $latestResult.FullName -DestinationPath $extractedDirectory
+Get-Content -LiteralPath (Join-Path $extractedDirectory "run.log") -Encoding UTF8
+```
+
+Extraction is optional and creates local copies; the runner itself returns only the one ZIP file.
+
+## Validation and interrupted runs
+
+```powershell
+# Stage and check syntax only; no scripts run on the laptop.
+uv run python -m demo.kaggle_run --dry-run --cpu src/demo/prepare_data.py
+
+# Check submission setup, then stop waiting after 15 seconds.
+# A timeout exits nonzero and leaves the remote job running.
+uv run --locked python -m demo.kaggle_run --cpu --wait-timeout 15 --poll-interval 3 tests/run_tests.py
+
+# Run meaningful workflow tests on Kaggle CPU using synthetic data.
+uv run python -m demo.kaggle_run --cpu --no-cache tests/run_tests.py
+
+# Reconnect to the same submission after a laptop disconnect.
+uv run python -m demo.kaggle_run --resume SUBMISSION_TIMESTAMP
+```
+
+Use the UTC timestamp printed when the job was submitted. Resuming does not resubmit the scripts. `--wait-timeout` controls how long the laptop waits; reaching it does not cancel Kaggle execution.
+
+Use `--metadata relative/path.json` to select another notebook and `--dataset owner/dataset-slug` to attach additional inputs. Avoid concurrent jobs targeting the same notebook because Kaggle's high-level status/output methods use the current run.
+
+## Git tracking
+
+Commit and push using separate PowerShell commands:
+
+```powershell
+git add -A
+if ($LASTEXITCODE -ne 0) { throw "Git staging failed." }
+git commit -m "run"
+if ($LASTEXITCODE -ne 0) { throw "Git commit failed." }
+git push
+if ($LASTEXITCODE -ne 0) { throw "Git push failed." }
+```
+
+Review staged files before committing. The submission runner uploads the current file snapshot, including uncommitted edits, and records script hashes. It does not clone GitHub.
+
+References: [uv projects](https://docs.astral.sh/uv/guides/projects/), [Kaggle kernels](https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md), [Kaggle datasets](https://github.com/Kaggle/kaggle-cli/blob/main/docs/datasets.md).

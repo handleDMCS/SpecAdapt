@@ -1,0 +1,9 @@
+# Fixed before the first model run. Demo subset, not the full thesis benchmark.
+prompt_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+max_new_tokens = 512
+k = 3
+seed = 42
+bootstrap_samples = 10000
+# Frozen target-generated cache from the TRAIN split; no test references used.
+cache_seed_train_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+cache_seed_tokens = 128
