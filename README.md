@@ -8,6 +8,49 @@ the library. Only `specadapt` is included in the library wheel; Kaggle is a
 development dependency. Demo commands below run from this repository's uv
 environment, which makes `src/` importable. Configuration stays at the root.
 
+## Gemini Notebook source
+
+The [repository source page](https://handleDMCS.github.io/SpecAdapt/) contains
+the code, tests, configuration, and design notes in one HTML document. GitHub
+Actions rebuilds it on every push to `main`. A
+[Markdown download](https://handleDMCS.github.io/SpecAdapt/specadapt.md) is also
+available for file imports.
+
+To enable publishing for a new copy of the repository, open **Settings > Pages**
+and set **Build and deployment > Source** to **GitHub Actions**. Then run
+**Actions > Publish notebook source > Run workflow** on `main`, or push a commit.
+Wait for both the build and deploy jobs to finish. Pages publishes the included
+source publicly.
+
+To use it in [Gemini Notebook](https://notebook.google.com/):
+
+1. Open or create your notebook and choose **Add sources > Website** (or **Web URL**).
+2. Paste `https://handleDMCS.github.io/SpecAdapt/` and add the source.
+3. Ask: "Using the SpecAdapt source, compare the vocabulary bridge design
+   alternatives. Cite relevant file paths, explain tradeoffs, and suggest tests."
+4. After code changes, re-import the URL and remove the old source. Check the
+   commit printed in the imported text to confirm you have the intended version.
+
+If the URL import fails, download `specadapt.md` from the page and upload it as a
+file source. Google imports text from the supplied HTML page, without following
+links to other files; the entire bundle is embedded directly for that reason.
+See [Google's source import guide](https://support.google.com/gemininotebook/answer/16215270?hl=en).
+
+`repomix.config.jsonc` controls the included files. It preserves complete code
+and comments while removing blank lines. Credentials, local outputs, dependency
+locks, and the generated seed cache are excluded; Repomix's secret check remains
+enabled. The page shows its source commit and build time. This workflow prepares
+context for a notebook; model selection is controlled separately in Gemini.
+
+To preview the bundle locally with Node.js 22 or newer:
+
+```powershell
+npx.cmd --yes repomix@1.19.0 --config repomix.config.jsonc
+node .github/scripts/render-notebook.mjs
+```
+
+The generated files are in the ignored `build/notebook-site/` directory.
+
 ## Pair 2 M1 demo
 
 Run these **sequentially** from the project root. Each runs its own target-only

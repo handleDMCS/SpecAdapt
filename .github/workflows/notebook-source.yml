@@ -1,0 +1,51 @@
+name: Publish notebook source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+      - name: Flatten source with Repomix
+        run: npx --yes repomix@1.19.0 --config repomix.config.jsonc
+      - name: Embed source in an importable HTML page
+        run: node .github/scripts/render-notebook.mjs
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: build/notebook-site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6.0.0
+      - name: Deploy source page
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1

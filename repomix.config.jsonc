@@ -1,0 +1,52 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "output": {
+    "filePath": "build/notebook-site/specadapt.md",
+    "style": "markdown",
+    "headerText": "SpecAdapt source snapshot for code and architecture discussion. File paths identify the original sources. Generated data, credentials, dependency locks, and local tooling are intentionally excluded.",
+    "compress": false,
+    "removeComments": false,
+    "removeEmptyLines": true,
+    "git": {
+      "sortByChanges": false,
+      "includeDiffs": false,
+      "includeLogs": false
+    }
+  },
+  "include": [
+    "src/**/*.py",
+    "tests/**/*.py",
+    "README.md",
+    "guide.md",
+    "notes/**/*.md",
+    "first_principle_notes/**/*.md",
+    "pyproject.toml",
+    "asset_plan.toml",
+    "pair2_demo.toml",
+    ".python-version",
+    ".github/workflows/notebook-source.yml",
+    ".github/scripts/render-notebook.mjs",
+    "repomix.config.jsonc"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/.env*",
+      "**/*.pem",
+      "**/*.key",
+      "**/credentials*",
+      ".codex/**",
+      ".agents/**",
+      ".aws/**",
+      "build/**",
+      "results/**",
+      "logs/**",
+      "uv.lock",
+      "m1_seed_cache.toml"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}
