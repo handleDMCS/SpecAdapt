@@ -1,5 +1,6 @@
-"""Run bundled scripts together inside Kaggle and publish one result archive."""
+"""Run bundled scripts together inside Kaggle and publish one JSON result."""
 
+import base64
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import hashlib
 import json
@@ -12,7 +13,6 @@ import time
 import tokenize
 import traceback
 import types
-import zipfile
 
 
 @contextmanager
@@ -73,12 +73,20 @@ def file_hash(path: Path) -> bytes:
         return hashlib.file_digest(stream, "sha256").digest()
 
 
+def artifact_content(path: Path) -> str | dict[str, str]:
+    content = path.read_bytes()
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"encoding": "base64", "data": base64.b64encode(content).decode("ascii")}
+
+
 def run_submission(project_root: Path, submission: dict, output_root: Path | None = None) -> Path:
     output_root = Path("/kaggle/working") if output_root is None else output_root
     output_root.mkdir(parents=True, exist_ok=True)
-    result = output_root / f"submission-{submission['timestamp']}.zip"
+    result = output_root / f"submission-{submission['timestamp']}.json"
     # Relative file writes go to a temporary work directory, not the model cache
-    # or /kaggle/working. The only published file is the final archive.
+    # or /kaggle/working. The only published file is the final JSON result.
     with tempfile.TemporaryDirectory(prefix="specadapt-work-") as temporary:
         work = Path(temporary) / "project"
         shutil.copytree(project_root, work)
@@ -114,20 +122,20 @@ def run_submission(project_root: Path, submission: dict, output_root: Path | Non
                     os.environ[key] = value
         report = {**submission, "status": status, "error": error_message,
                   "elapsed_seconds": round(time.monotonic() - started, 3)}
+        report["run_log"] = log.read_text(encoding="utf-8", errors="replace")
+        report["outputs"] = {}
+        for artifact in sorted(work.rglob("*")):
+            relative = artifact.relative_to(work)
+            if (artifact.is_file() and not artifact.is_symlink() and "__pycache__" not in relative.parts
+                    and (relative not in original_files or original_files[relative] != file_hash(artifact))):
+                report["outputs"][relative.as_posix()] = artifact_content(artifact)
+        new_outputs = set(output_root.rglob("*")) - existing_outputs - {result}
+        for artifact in sorted(new_outputs):
+            if artifact.is_file() and not artifact.is_symlink():
+                report["outputs"][f"kaggle_working/{artifact.relative_to(output_root).as_posix()}"] = artifact_content(artifact)
         # Store metadata outside the scripts' work directory to avoid collisions.
-        with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("submission.json", json.dumps(report, indent=2))
-            archive.write(log, "run.log")
-            for artifact in sorted(work.rglob("*")):
-                relative = artifact.relative_to(work)
-                if (artifact.is_file() and not artifact.is_symlink() and "__pycache__" not in relative.parts
-                        and (relative not in original_files or original_files[relative] != file_hash(artifact))):
-                    archive.write(artifact, f"outputs/{relative.as_posix()}")
-            new_outputs = set(output_root.rglob("*")) - existing_outputs - {result}
-            for artifact in sorted(new_outputs):
-                if artifact.is_file() and not artifact.is_symlink():
-                    archive.write(artifact, f"outputs/kaggle_working/{artifact.relative_to(output_root).as_posix()}")
-        # Fold explicit /kaggle/working writes into the same archive as relative
+        result.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Fold explicit /kaggle/working writes into the same JSON as relative
         # writes, removing only files created by this submission.
         for artifact in sorted(new_outputs, key=lambda path: len(path.parts), reverse=True):
             if artifact.is_symlink() or artifact.is_file():
@@ -135,6 +143,6 @@ def run_submission(project_root: Path, submission: dict, output_root: Path | Non
             elif artifact.is_dir():
                 artifact.rmdir()
     # Return normally even after a user-script failure so Kaggle publishes the
-    # diagnostics. The laptop reads submission.json and returns a nonzero exit.
-    print(f"Result archive: {result}")
+    # diagnostics. The laptop reads the result JSON and returns a nonzero exit.
+    print(f"Result JSON: {result}")
     return result

@@ -34,20 +34,20 @@ For CLI-only initialization, a separately authorized private credential dataset 
 
 ```powershell
 uv run python -m demo.kaggle_run src/demo/check_cuda.py
-if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result archive." }
+if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result JSON." }
 
 # Replace these names with your root-relative script paths.
 uv run python -m demo.kaggle_run first.py second.py
-if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result archive." }
+if ($LASTEXITCODE -ne 0) { throw "Kaggle job failed; inspect its result JSON." }
 ```
 
 The argument order determines execution order. All scripts run in the same Python process and share globals, imports, variables and model instances. Main blocks run normally. Errors stop subsequent scripts and are recorded in the combined log.
 
-The runner snapshots Python files and TOML configuration into an ignored `build\submissions\<timestamp>` directory. It uploads one generated script with that snapshot embedded, polls Kaggle, and downloads one result archive.
+The runner snapshots Python files and TOML configuration into an ignored `build\submissions\<timestamp>` directory. It uploads one generated script with that snapshot embedded, polls Kaggle, and downloads one result JSON file. The input project bundle inside `submission.py` remains a compressed ZIP embedded as base64.
 
 The staged metadata uses the ID and compute settings from `kernel-metadata.json`; its `code_file` is replaced by the generated submission script. `--cpu` disables GPUs for the staged run without editing your metadata file.
 
-Relative paths in submitted code refer to the bundled project root. New or changed files are collected as output. Explicit writes under `/kaggle/working` are collected into the same archive. Persistent model storage is kept outside these output folders.
+Relative paths in submitted code refer to the bundled project root. New or changed files are collected as output. Explicit writes under `/kaggle/working` are collected into the same JSON result and cleaned up. Persistent model storage is kept outside these output folders.
 
 ## Initialize and reuse the cache
 
@@ -74,26 +74,27 @@ This prepares source data only. Test/calibration subsets and model execution bel
 
 ## One result file per submission
 
-Each submission returns `results\submission-<UTC-submission-timestamp>.zip`:
+Each submission returns `results\submission-<UTC-submission-timestamp>.json`:
 
-- `run.log`: stdout, stderr, subprocess output and tracebacks in execution order.
-- `submission.json`: script order, content hashes, timing and status.
-- `outputs/`: files produced by the scripts.
+- Top-level `timestamp`, `scripts`, `script_sha256`, `cache_owner`, `status`, `error`, and `elapsed_seconds`: submission metadata.
+- `run_log`: stdout, stderr, subprocess output and tracebacks in execution order.
+- `outputs`: relative artifact paths mapped to UTF-8 strings, or `{"encoding": "base64", "data": "<b64>"}` for files that are not valid UTF-8. Explicit writes to `/kaggle/working` use keys starting with `kaggle_working/`.
 
-For example, the GPU check's `cuda_spec.txt` is inside `outputs/`. The CLI prints the combined log. If a script fails, the result archive is still saved and the CLI returns a nonzero exit code.
+For example, the GPU check's text is in `outputs["cuda_spec.txt"]`. The CLI verifies the timestamp and prints `run_log`. If a script fails, the JSON result retains diagnostics and partial outputs, and the CLI returns a nonzero exit code. If Kaggle fails before producing the result file, the CLI synthesizes a JSON result with `status: "platform_error"`, `kaggle_status`, available downloaded logs in `run_log`, and `outputs: {}`. A completed job missing its expected result is an error.
 
-Read the archive directly or extract it with PowerShell when needed:
+Read the result directly with PowerShell:
 
 ```powershell
-$latestResult = Get-ChildItem -LiteralPath .\results -Filter "submission-*.zip" |
+$latestResult = Get-ChildItem -LiteralPath .\results -Filter "submission-*.json" |
     Sort-Object Name -Descending | Select-Object -First 1
 if ($null -eq $latestResult) { throw "No submission result found." }
-$extractedDirectory = Join-Path "results" $latestResult.BaseName
-Expand-Archive -LiteralPath $latestResult.FullName -DestinationPath $extractedDirectory
-Get-Content -LiteralPath (Join-Path $extractedDirectory "run.log") -Encoding UTF8
+$report = Get-Content -LiteralPath $latestResult.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+$report.run_log
+$report.outputs.'cuda_spec.txt'
 ```
 
-Extraction is optional and creates local copies; the runner itself returns only the one ZIP file.
+For a binary artifact, decode its `data` with `[Convert]::FromBase64String(...)`.
+The runner saves only the one JSON file; it does not extract artifacts locally.
 
 ## Validation and interrupted runs
 

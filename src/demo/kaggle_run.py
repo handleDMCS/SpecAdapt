@@ -147,27 +147,27 @@ def kernel_ref(ref: str, fallback: str) -> str:
 
 
 def fetch_result(api, kernel: str, submission: dict, status: str, destination: Path) -> tuple[Path, dict]:
-    filename = f"submission-{submission['timestamp']}.zip"
+    filename = f"submission-{submission['timestamp']}.json"
     destination.mkdir(parents=True, exist_ok=True)
     result = destination / filename
     with tempfile.TemporaryDirectory(prefix="specadapt-result-") as temporary:
-        api.kernels_output(kernel, temporary, file_pattern=f"^{re.escape(filename)}$", quiet=True)
+        api.kernels_output(kernel, temporary, file_pattern=rf"^(?:{re.escape(filename)}|.*\.log)$", quiet=True)
         downloaded = Path(temporary) / filename
         if downloaded.is_file():
-            with zipfile.ZipFile(downloaded) as archive:
-                report = json.loads(archive.read("submission.json"))
+            report = json.loads(downloaded.read_text(encoding="utf-8"))
             if report.get("timestamp") != submission["timestamp"]:
                 raise RuntimeError("Kaggle returned a different submission's result.")
             shutil.copyfile(downloaded, result)
         else:
             if status == "complete":
-                raise RuntimeError("Kaggle completed without this submission's result archive.")
-            report = {**submission, "status": "platform_error", "kaggle_status": status}
-            with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr("submission.json", json.dumps(report, indent=2))
-                logs = "\n".join(path.read_text(encoding="utf-8", errors="replace")
-                                  for path in Path(temporary).glob("*.log"))
-                archive.writestr("run.log", logs or f"Kaggle job ended with status: {status}\n")
+                raise RuntimeError("Kaggle completed without this submission's result JSON.")
+            logs = "\n".join(path.read_text(encoding="utf-8", errors="replace")
+                             for path in sorted(Path(temporary).rglob("*.log")))
+            message = f"Kaggle job ended with status: {status}"
+            report = {**submission, "status": "platform_error", "kaggle_status": status,
+                      "error": message, "elapsed_seconds": None,
+                      "run_log": logs or f"{message}\n", "outputs": {}}
+            result.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return result, report
 
 
@@ -247,8 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Submitted {kernel}, version {response.version_number}", flush=True)
         status = wait_for_run(api, kernel, args.poll_interval, args.wait_timeout)
         result, report = fetch_result(api, kernel, submission, status, PROJECT_ROOT / "results")
-        with zipfile.ZipFile(result) as archive:
-            print(archive.read("run.log").decode("utf-8", errors="replace"))
+        print(report["run_log"])
         print(f"Result: {result}")
         return 0 if status == "complete" and report["status"] == "complete" else 1
     except (Exception, KeyboardInterrupt) as error:

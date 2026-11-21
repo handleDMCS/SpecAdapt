@@ -53,8 +53,13 @@ The generated files are in the ignored `build/notebook-site/` directory.
 
 ## Pair 2 M1 demo
 
+For repeated adapter development, see [draft-only oracle replay](notes/oracle-replay.md).
+It reuses a recorded greedy target trajectory, loads only draft weights, and
+reports acceptance and draft/bridge timings. Full demos below remain the source
+of actual two-model throughput and numerical agreement checks.
+
 Run these **sequentially** from the project root. Each runs its own target-only
-reference and writes per-prompt results plus a summary into the downloaded ZIP.
+reference and writes per-prompt results plus a summary into the downloaded JSON result.
 Both use the same pinned Kaggle notebook environment.
 
 ```powershell
@@ -83,11 +88,11 @@ machine shape. For a comparison that also eliminates differences between
 notebook environments, use `src/demo/demo_compare.py` after `src/demo/prepare_data.py`: it loads
 the models once, rotates execution order, and writes both result sets.
 
-The result files are `outputs/demo_results/{baseline,m1}.jsonl`, plus metadata and
-summary JSON files. They include acceptance, accepted tokens per verification,
+The result's `outputs` object contains `demo_results/{baseline,m1}.jsonl`, plus
+metadata and summary JSON strings. They include acceptance, accepted tokens per verification,
 throughput, bridge overhead, and token-level agreement with target-only decoding.
-After both finish, `uv run --locked python -m demo.compare_demo BASELINE.zip M1.zip` analyzes the two downloaded
-archives and writes `results/pair2_comparison.json`, including a paired bootstrap
+After both finish, `uv run --locked python -m demo.compare_demo BASELINE.json M1.json` analyzes the two downloaded
+submission JSON files and writes `results/pair2_comparison.json`, including a paired bootstrap
 interval. Models and tests run exclusively on Kaggle.
 
 ## Setup
@@ -109,7 +114,18 @@ uv run python -m demo.kaggle_run first.py second.py third.py
 
 Paths are relative to the project root, including paths supplied with PowerShell backslashes. Quote paths containing spaces. The scripts share one Python session and namespace, like consecutive notebook cells. Each script's `if __name__ == "__main__"` block runs. A failure stops the remaining scripts.
 
-Each submission produces one local file: `results\submission-<UTC-submission-timestamp>.zip`. It contains `run.log` (stdout, stderr and tracebacks from every script), `submission.json` (ordered paths, script hashes and status), and any files produced by the scripts under `outputs/`. The CLI also prints the combined log and exits nonzero on failure. Relative file access uses the bundled project root.
+Each submission produces one local file: `results\submission-<UTC-submission-timestamp>.json`.
+Top-level fields contain `timestamp`, `scripts`, `script_sha256`, `cache_owner`,
+`status`, `error`, and `elapsed_seconds`. `run_log` holds captured stdout, stderr,
+subprocess output, and tracebacks. `outputs` maps relative artifact paths to
+UTF-8 strings; files that are not valid UTF-8 use
+`{"encoding": "base64", "data": "<b64>"}`. Explicit writes to `/kaggle/working`
+use the `kaggle_working/` path prefix and are folded into the same JSON file.
+The CLI verifies the submission timestamp, prints `run_log`, and exits nonzero
+on failure. If Kaggle fails without producing the result, the CLI saves a JSON
+report with `status: "platform_error"`, `kaggle_status`, available platform logs,
+and an empty `outputs` object. Relative file access uses the bundled project root.
+The input project bundle embedded in `submission.py` is unchanged.
 
 Python source files and TOML configuration are bundled automatically. Credentials, virtual environments and previous results are excluded. Attach other input files as Kaggle datasets using `--dataset owner/slug`. Keep datasets and large model weights out of script output folders.
 
@@ -119,7 +135,7 @@ Python source files and TOML configuration are bundled automatically. Credential
 uv run python -m demo.kaggle_run --cpu src/demo/prepare_data.py
 ```
 
-This downloads pinned assets from [asset_plan.toml](asset_plan.toml) on Kaggle and publishes private Kaggle Datasets: one per model and one containing the five dataset sources for the four tasks. Nothing is downloaded onto your laptop except the result archive.
+This downloads pinned assets from [asset_plan.toml](asset_plan.toml) on Kaggle and publishes private Kaggle Datasets: one per model and one containing the five dataset sources for the four tasks. Nothing is downloaded onto your laptop except the result JSON.
 
 The first run needs remote **KAGGLE_API_TOKEN** access to publish the caches. Kaggle CLI pushes do not carry Add-ons secret attachments, so either run initialization once from Kaggle's browser with the secrets enabled, or explicitly authorize a private credential input and attach it using `--dataset owner/specadapt-run-credentials`. The local `.env` is never bundled into code or results.
 

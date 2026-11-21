@@ -69,20 +69,30 @@ class CachedModel:
 
 
 def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
-             max_new_tokens=128, k=3, use_cache=True, seed_cache=None):
+             max_new_tokens=128, k=3, use_cache=True, seed_cache=None, oracle=None):
     import torch
     if mode not in {"target", "baseline", "m1"}:
         raise ValueError(mode)
+    if type(k) is not int or k <= 0 or type(max_new_tokens) is not int or max_new_tokens <= 0:
+        raise ValueError("k and max_new_tokens must be positive integers.")
+    if oracle is not None:
+        if target is not None or mode == "target":
+            raise ValueError("Oracle replay requires a draft mode and no target model.")
+        oracle.validate_limit(max_new_tokens)
     target_ids = target_tokenizer.encode(target_prompt(target_tokenizer, prompt), add_special_tokens=False)
     generated = []
-    target_state, draft_state = CachedModel(target), CachedModel(draft)
+    target_state = CachedModel(target) if oracle is None else None
+    draft_state = CachedModel(draft)
     setup_start = time.perf_counter()
     bridge = VocabularyBridge(draft_tokenizer, target_tokenizer, k) if mode == "m1" else None
     if bridge:
         bridge.continuations.extend(target_tokenizer.encode(prompt, add_special_tokens=False))
     bridge_setup_seconds = time.perf_counter() - setup_start
-    eos = target.generation_config.eos_token_id
-    eos = set(eos if isinstance(eos, list) else [eos])
+    if oracle is None:
+        eos = target.generation_config.eos_token_id
+        eos = set(eos if isinstance(eos, list) else [eos])
+    else:
+        eos = oracle.eos_token_ids
     draft_eos = {draft_tokenizer.eos_token_id}
     rounds = accepted = proposed_count = draft_tokens = cache_rounds = 0
     bridge_seconds = 0.0
@@ -90,7 +100,8 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
     started = time.perf_counter()
     with torch.inference_mode():
         # Cache all but the final token so each verification predicts its proposals.
-        target_state.sync(target_ids[:-1])
+        if target_state is not None:
+            target_state.sync(target_ids[:-1])
         while len(generated) < max_new_tokens:
             remaining = max_new_tokens - len(generated)
             candidates = []
@@ -121,15 +132,18 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
                                                target_ids + generated, k)
                 bridge_seconds += time.perf_counter() - bridge_start
             candidates = candidates[:remaining]
-            prefix = target_ids + generated
-            # Crop away rejected tokens left over from the previous round.
-            target_state.cache.crop(len(prefix) - 1)
-            target_state.ids = prefix[:-1]
-            logits = target_state.sync(prefix + candidates)
-            predictions = logits[0].argmax(dim=-1).tolist()
+            if oracle is None:
+                prefix = target_ids + generated
+                # Crop away rejected tokens left over from the previous round.
+                target_state.cache.crop(len(prefix) - 1)
+                target_state.ids = prefix[:-1]
+                logits = target_state.sync(prefix + candidates)
+                predictions = logits[0].argmax(dim=-1).tolist()
+            else:
+                predictions = oracle.predictions(generated, candidates)
             count = accepted_prefix(candidates, predictions)
             committed = candidates[:count]
-            if len(committed) < remaining:
+            if len(committed) < remaining and not any(token in eos for token in committed):
                 committed.append(predictions[count])
             for position, token in enumerate(committed):
                 if token in eos:
@@ -148,7 +162,7 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
                 break
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started + bridge_setup_seconds
-    return dict(mode=mode, token_ids=generated, text=decode(target_tokenizer, generated),
+    result = dict(mode=mode, token_ids=generated, text=decode(target_tokenizer, generated),
                 generated_tokens=len(generated), seconds=elapsed, tokens_per_second=len(generated) / elapsed,
                 rounds=rounds, accepted=accepted, proposed=proposed_count,
                 acceptance_rate=accepted / proposed_count if proposed_count else 0.0,
@@ -157,3 +171,8 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
                 bridge_setup_seconds=bridge_setup_seconds,
                 bridge_seconds=bridge_seconds, bridge_ms_per_token=1000 * bridge_seconds / len(generated),
                 cache_rounds=cache_rounds, bridge_stats=bridge.stats if bridge else {})
+    if oracle is not None:
+        result["verification"] = "oracle"
+        result["replay_seconds"] = result.pop("seconds")
+        result.pop("tokens_per_second")
+    return result

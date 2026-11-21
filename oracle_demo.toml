@@ -1,0 +1,4 @@
+# Keep workload identical to pair2_demo.toml for the initial runtime comparison.
+# Optional max_new_tokens, k, and prompt_ids overrides affect replay only.
+mode = "m1"
+reference_file = "target_references.toml"

@@ -23,6 +23,7 @@
     "pyproject.toml",
     "asset_plan.toml",
     "pair2_demo.toml",
+    "oracle_demo.toml",
     ".python-version",
     ".github/workflows/notebook-source.yml",
     ".github/scripts/render-notebook.mjs",

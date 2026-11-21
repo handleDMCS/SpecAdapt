@@ -15,7 +15,7 @@ caches, and reached `running`. Local polling stopped at the intentional
 
 | File / directory | Purpose |
 |---|---|
-| `src/demo/kaggle_run.py` | Local CLI: validate, bundle, attach inputs, submit, wait, fetch one ZIP. |
+| `src/demo/kaggle_run.py` | Local CLI: validate, bundle, attach inputs, submit, wait, fetch one JSON result. |
 | `src/demo/kaggle_runtime.py` | Remote execution: shared namespace, output capture, artifact packaging. |
 | `src/demo/prepare_data.py` | Remote asset download/publication or cache validation; exports paths and row counts. |
 | `src/demo/assets.py` | Asset-plan validation, cache fingerprints, readiness polling and file validation. |
@@ -26,10 +26,10 @@ caches, and reached `running`. Local polling stopped at the intentional
 | `src/specadapt/bridge.py`, `src/specadapt/decoding.py` | M1 overlap/trie/continuation cache and greedy verification with KV rollback. |
 | `src/demo/benchmark.py`, `pair2_demo.toml` | Fixed P2/GSM8K demo, package pins, target-only references and per-prompt metrics. |
 | `src/demo/demo_baseline.py`, `src/demo/demo_m1.py` | Separate Kaggle entry scripts; prepend `src/demo/prepare_data.py`. |
-| `src/demo/compare_demo.py` | Local analysis of downloaded result ZIPs, including paired bootstrap confidence intervals. |
+| `src/demo/compare_demo.py` | Local analysis of downloaded submission JSON files, including paired bootstrap confidence intervals. |
 | `pyproject.toml`, `uv.lock`, `.python-version` | Local Python 3.12 environment; development dependency is `kaggle>=2.2.4`. |
 | `build/submissions/<timestamp>/` | Ignored local staging: generated source, submission record and effective metadata. Keep for `--resume`. |
-| `results/` | Ignored downloaded submission ZIPs. |
+| `results/` | Ignored downloaded submission JSON files (older runs used ZIP archives). |
 
 SpecAdapt is a standalone library: the wheel contains only `src/specadapt/`.
 Kaggle and benchmark code lives in `src/demo/`, and Kaggle is a development
@@ -76,16 +76,22 @@ Script paths must be **relative to the project root**. PowerShell backslashes wo
 
 **Execution contract**
 
-1. The laptop bundles the current `.py` and `.toml` files, authenticates using `.env`, discovers matching private caches, and pushes a generated `submission.py` to Kaggle. Git commit/push is optional; submission does not clone GitHub.
+1. The laptop bundles the current `.py` and `.toml` files, authenticates using `.env`, discovers matching private caches, and pushes a generated `submission.py` to Kaggle. The input bundle remains a compressed ZIP embedded as base64. Git commit/push is optional; submission does not clone GitHub.
 2. Kaggle extracts the bundle into temporary project storage and runs scripts sequentially with shared globals/import state. Every script runs as `__main__`; main guards execute, and `__file__` identifies the current script. Relative file access starts at the bundled project root. Root, `src/` and the current script's directory are importable.
 3. Exceptions or nonzero `SystemExit` stop later scripts. `SystemExit(0)` continues. Reusing global names can overwrite earlier values.
-4. The runtime captures stdout, stderr, subprocess output and tracebacks, then packages generated files. The CLI waits, downloads the ZIP, prints its log, and exits nonzero on failure.
+4. The runtime captures stdout, stderr, subprocess output and tracebacks, then collects generated files into one JSON result. The CLI waits, downloads the JSON, verifies its timestamp, prints `run_log`, and exits nonzero on failure.
 
-**One output file:** `results/submission-<UTC-timestamp>.zip`, where the timestamp is assigned on the laptop at submission, including microseconds. Inside:
+**One output file:** `results/submission-<UTC-timestamp>.json`, where the timestamp is assigned on the laptop at submission, including microseconds. Fields:
 
-- `run.log`: combined script output; displayed after completion, without live script-log streaming.
-- `submission.json`: ordered scripts, selected-script SHA-256 hashes, cache owner, status, error and elapsed time.
-- `outputs/`: new/modified project files; explicit new `/kaggle/working` files appear under `outputs/kaggle_working/`.
+- Top-level `timestamp`, `scripts`, `script_sha256`, `cache_owner`, `status`, `error`, and `elapsed_seconds`: submission metadata.
+- `run_log`: combined script output; displayed after completion, without live script-log streaming.
+- `outputs`: maps each new/modified project file's relative path to its UTF-8 string content. Files that are not valid UTF-8 use `{"encoding": "base64", "data": "<b64>"}`. Explicit new `/kaggle/working` files use keys prefixed with `kaggle_working/` and are removed after collection, leaving the result JSON.
+
+Script failures retain their traceback and partial artifacts. If a platform failure
+produces no result file, the CLI synthesizes the same JSON container with
+`status: "platform_error"`, `kaggle_status`, downloaded `*.log` content in
+`run_log` (or a status message when no logs exist), and `outputs: {}`. `--resume`
+downloads the original timestamp's JSON without resubmitting scripts.
 
 Excluded from upload: hidden files/directories, symlinks, `.venv`, `.git`, `build`, `results`, `logs`, Python caches, and file types other than `.py`/`.toml`. **JSON, CSV and arbitrary data files are not bundled**; attach them as Kaggle inputs or use supported configuration files. `.env` is never bundled. The manifest hashes selected scripts, not the complete repository snapshot.
 
@@ -140,7 +146,7 @@ This reuses available caches and downloads only the missing asset. Missing/denie
 - Submit serially to each notebook ID. Kaggle status/output APIs follow the current run; use separate metadata/notebook IDs for independent jobs.
 - `--resume` waits/fetches the original submission using local staging. It does not rerun scripts or implement experiment checkpoints. A timeout/interrupted CLI does not cancel the remote job.
 - The local demo metadata now pins `machine_shape = NvidiaTeslaT4` and the baseline's Kaggle image digest (PyTorch `2.10.0+cu128`). The decoder uses device 0 only. Separate notebooks initially selected different PyTorch images, so use the pinned metadata or `src/demo/demo_compare.py` for comparable measurements.
-- Keep weights/downloads outside generated-output directories. The ZIP collects generated files; persistent assets belong in private Kaggle Datasets.
+- Keep weights/downloads outside generated-output directories. The JSON result collects generated files; persistent assets belong in private Kaggle Datasets.
 - Treat [experiment.md](experiment.md) as the intended research plan, not a list of implemented experiment features.
 
-Evidence: [fresh-session tests and cache reuse](../results/submission-20261013T051435880249Z.zip), [GPU smoke run](../results/submission-20261013T052916251728Z.zip). Both archives are local ignored artifacts.
+Historical evidence from the former ZIP result format: [fresh-session tests and cache reuse](../results/submission-20261013T051435880249Z.zip), [GPU smoke run](../results/submission-20261013T052916251728Z.zip). Both archives are local ignored artifacts; new submissions produce JSON.

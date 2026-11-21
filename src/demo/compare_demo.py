@@ -1,25 +1,28 @@
-"""Analyze downloaded Kaggle result ZIPs; does not run models or benchmarks.
+"""Analyze downloaded Kaggle submission JSON files; does not run models or benchmarks.
 
-Usage: uv run --locked python -m demo.compare_demo BASELINE.zip M1.zip
+Usage: uv run --locked python -m demo.compare_demo BASELINE.json M1.json
 """
 
 import argparse
 import json
 from pathlib import Path
 import random
-import zipfile
 
 
 def read_run(path, mode):
-    with zipfile.ZipFile(path) as archive:
-        if json.loads(archive.read("submission.json"))["status"] != "complete":
-            raise ValueError(f"Submission did not complete: {path}")
-        candidates = [name for name in archive.namelist() if name.endswith(f"/{mode}.jsonl")]
-        if len(candidates) != 1:
-            raise ValueError(f"Expected exactly one {mode}.jsonl in {path}")
-        rows = [json.loads(line) for line in archive.read(candidates[0]).decode().splitlines()]
-        meta_path = candidates[0].removesuffix(".jsonl") + "_metadata.json"
-        metadata = json.loads(archive.read(meta_path))
+    report = json.loads(Path(path).read_text(encoding="utf-8"))
+    if report["status"] != "complete":
+        raise ValueError(f"Submission did not complete: {path}")
+    outputs = report["outputs"]
+    candidates = [name for name in outputs if Path(name).name == f"{mode}.jsonl"]
+    if len(candidates) != 1:
+        raise ValueError(f"Expected exactly one {mode}.jsonl in {path}")
+    meta_path = candidates[0].removesuffix(".jsonl") + "_metadata.json"
+    contents, meta_contents = outputs[candidates[0]], outputs[meta_path]
+    if not isinstance(contents, str) or not isinstance(meta_contents, str):
+        raise ValueError(f"Expected UTF-8 benchmark results and metadata in {path}")
+    rows = [json.loads(line) for line in contents.splitlines()]
+    metadata = json.loads(meta_contents)
     if len({row["prompt_id"] for row in rows}) != len(rows):
         raise ValueError("Duplicate prompt IDs")
     if {row["prompt_id"] for row in rows} != set(metadata["config"]["prompt_ids"]):
@@ -47,15 +50,15 @@ def compare(baseline_path, m1_path):
                                                    m1[key]["target_reference"]["token_ids"] for key in baseline),
               "same_speculative_output_prompts": sum(baseline[key]["token_ids"] == m1[key]["token_ids"]
                                                       for key in baseline),
-              "baseline_archive": str(baseline_path), "m1_archive": str(m1_path)}
+              "baseline_result": str(baseline_path), "m1_result": str(m1_path)}
     result["throughput_ratio_m1_over_baseline"] = result["m1"]["tokens_per_second"] / result["baseline"]["tokens_per_second"]
     return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("baseline", type=Path)
-    parser.add_argument("m1", type=Path)
+    parser.add_argument("baseline", type=Path, help="Baseline submission-<timestamp>.json result")
+    parser.add_argument("m1", type=Path, help="M1 submission-<timestamp>.json result")
     args = parser.parse_args()
     result = compare(args.baseline, args.m1)
     output = Path("results/pair2_comparison.json")

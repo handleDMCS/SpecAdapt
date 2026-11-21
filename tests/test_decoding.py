@@ -82,6 +82,13 @@ class DecoderTests(unittest.TestCase):
             wrong_seed = FrozenContinuationCache([[97, 98, 97, 120, 121, 122]])
             seeded = generate(Model(), Model(True), tokenizer, tokenizer, "question",
                               mode="m1", k=3, max_new_tokens=17, seed_cache=wrong_seed)
+            from specadapt.oracle import GreedyOracle
+            oracle = GreedyOracle(results["target"]["token_ids"], [127])
+            replayed = {mode: generate(None, Model(True), tokenizer, tokenizer, "ab ab ab",
+                                        mode=mode, k=3, max_new_tokens=17, oracle=oracle)
+                        for mode in ("baseline", "m1")}
+            replayed_seed = generate(None, Model(True), tokenizer, tokenizer, "question",
+                                    mode="m1", k=3, max_new_tokens=17, seed_cache=wrong_seed, oracle=oracle)
         self.assertEqual(results["target"]["token_ids"], [97, 98] * 8 + [97])
         for mode in ("baseline", "m1"):
             self.assertEqual(results[mode]["token_ids"], results["target"]["token_ids"])
@@ -89,6 +96,16 @@ class DecoderTests(unittest.TestCase):
         self.assertLess(results["m1"]["rounds"], results["baseline"]["rounds"])
         self.assertEqual(seeded["token_ids"], results["target"]["token_ids"])
         self.assertGreater(seeded["bridge_stats"]["seed_hits"], 0)
+        for mode in ("baseline", "m1"):
+            for key in ("token_ids", "rounds", "accepted", "proposed", "draft_tokens", "draft_steps",
+                        "cache_rounds", "bridge_stats"):
+                self.assertEqual(replayed[mode][key], results[mode][key], (mode, key))
+            self.assertNotIn("tokens_per_second", replayed[mode])
+            self.assertNotIn("seconds", replayed[mode])
+            self.assertNotIn("exact_match", replayed[mode])
+            self.assertGreaterEqual(replayed[mode]["replay_seconds"], 0)
+        for key in ("token_ids", "rounds", "accepted", "proposed", "cache_rounds", "bridge_stats"):
+            self.assertEqual(replayed_seed[key], seeded[key], key)
 
 
 if __name__ == "__main__":

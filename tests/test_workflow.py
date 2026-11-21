@@ -1,16 +1,20 @@
+import base64
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-import zipfile
 
 from demo import kaggle_run
 from demo import prepare_data
 from demo.assets import MANIFEST_NAME, asset_files, cache_assets, load_plan, validate_cache, wait_cache_ready
+from demo.compare_demo import read_run
 from demo.kaggle_runtime import execute_scripts, run_submission
 
 
@@ -50,32 +54,54 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(namespace["reached"])
         self.assertNotIn("should_not_run", namespace)
 
-    def test_one_archive_contains_stdout_stderr_subprocess_and_artifacts(self):
+    def test_one_json_contains_stdout_stderr_subprocess_and_artifacts(self):
         outputs = self.root / "outputs"
         self.script("one.py", "from pathlib import Path\nimport sys, subprocess\n"
                     "print('python stdout')\nprint('python stderr', file=sys.stderr)\n"
                     "subprocess.run([sys.executable, '-c', \"print('child output')\"], check=True)\n"
-                    "Path('report.txt').write_text('answer')\n"
-                    f"Path({str(outputs / 'explicit.txt')!r}).write_text('absolute')\n")
-        result = run_submission(self.project, {"timestamp": "test", "scripts": ["one.py"], "cache_owner": "owner"}, outputs)
+                    "Path('report.txt').write_text('answer: café\\n', encoding='utf-8')\n"
+                    "Path('empty.txt').touch()\n"
+                    "Path('binary.bin').write_bytes(bytes([0, 255, 128]))\n"
+                    "Path('existing.toml').write_text('changed = true\\n')\n"
+                    f"explicit = Path({str(outputs / 'nested')!r})\nexplicit.mkdir()\n"
+                    "(explicit / 'explicit.txt').write_text('absolute', encoding='utf-8')\n"
+                    "(explicit / 'binary.bin').write_bytes(bytes([255, 254]))\n")
+        (self.project / "existing.toml").write_text("changed = false\n")
+        submission = {"timestamp": "test", "scripts": ["one.py"], "cache_owner": "owner",
+                      "script_sha256": {"one.py": "synthetic-hash"}}
+        result = run_submission(self.project, submission, outputs)
+        self.assertEqual(result.name, "submission-test.json")
         self.assertEqual(list(outputs.iterdir()), [result])
-        with zipfile.ZipFile(result) as archive:
-            log = archive.read("run.log").decode()
-            for text in ("python stdout", "python stderr", "child output"):
-                self.assertIn(text, log)
-            self.assertEqual(archive.read("outputs/report.txt"), b"answer")
-            self.assertEqual(archive.read("outputs/kaggle_working/explicit.txt"), b"absolute")
-            self.assertNotIn("outputs/one.py", archive.namelist())
+        report = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(set(report), {*submission, "status", "error", "elapsed_seconds", "run_log", "outputs"})
+        for key, value in submission.items():
+            self.assertEqual(report[key], value)
+        self.assertEqual(report["status"], "complete")
+        self.assertIsNone(report["error"])
+        self.assertGreaterEqual(report["elapsed_seconds"], 0)
+        for text in ("python stdout", "python stderr", "child output"):
+            self.assertIn(text, report["run_log"])
+        self.assertEqual(report["outputs"], {
+            "report.txt": "answer: café\n", "empty.txt": "", "existing.toml": "changed = true\n",
+            "binary.bin": {"encoding": "base64", "data": base64.b64encode(b"\x00\xff\x80").decode("ascii")},
+            "kaggle_working/nested/explicit.txt": "absolute",
+            "kaggle_working/nested/binary.bin": {"encoding": "base64", "data": base64.b64encode(b"\xff\xfe").decode("ascii")},
+        })
 
     def test_failure_keeps_diagnostics_and_skips_remaining_scripts(self):
-        self.script("bad.py", "raise ValueError('intentional test failure')\n")
+        self.script("bad.py", "from pathlib import Path\nprint('before failure')\n"
+                    "Path('partial.txt').write_text('partial output')\n"
+                    "raise ValueError('intentional test failure')\n")
         self.script("after.py", "from pathlib import Path\nPath('wrong.txt').touch()\n")
         result = run_submission(self.project, {"timestamp": "failure", "scripts": ["bad.py", "after.py"],
                                                "cache_owner": "owner"}, self.root / "outputs")
-        with zipfile.ZipFile(result) as archive:
-            self.assertEqual(json.loads(archive.read("submission.json"))["status"], "failed")
-            self.assertIn(b"intentional test failure", archive.read("run.log"))
-            self.assertNotIn("outputs/wrong.txt", archive.namelist())
+        report = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["error"], "ValueError: intentional test failure")
+        for text in ("before failure", "Traceback", "intentional test failure"):
+            self.assertIn(text, report["run_log"])
+        self.assertEqual(report["outputs"], {"partial.txt": "partial output"})
+        self.assertEqual(list(result.parent.iterdir()), [result])
 
     def test_submission_restores_environment_and_working_directory(self):
         self.script("one.py", "pass\n")
@@ -103,27 +129,89 @@ class RuntimeTests(unittest.TestCase):
 
     def test_result_download_leaves_one_file_and_preserves_failure_status(self):
         submission = {"timestamp": "test", "scripts": []}
+        expected = {**submission, "status": "failed", "run_log": "traceback", "outputs": {"partial.txt": "partial"}}
         def download(kernel, path, **kwargs):
-            with zipfile.ZipFile(Path(path) / "submission-test.zip", "w") as archive:
-                archive.writestr("submission.json", json.dumps({**submission, "status": "failed"}))
-                archive.writestr("run.log", "traceback")
+            self.assertRegex("submission-test.json", kwargs["file_pattern"])
+            self.assertIsNone(re.search(kwargs["file_pattern"], "submission-other.json"))
+            (Path(path) / "submission-test.json").write_text(json.dumps(expected), encoding="utf-8")
             (Path(path) / "extra-sdk.log").write_text("platform log")
         output = self.root / "downloaded"
         result, report = kaggle_run.fetch_result(SimpleNamespace(kernels_output=download), "owner/kernel", submission, "complete", output)
         self.assertEqual(list(output.iterdir()), [result])
-        self.assertEqual(report["status"], "failed")
+        self.assertEqual(result.name, "submission-test.json")
+        self.assertEqual(report, expected)
+        self.assertEqual(json.loads(result.read_text(encoding="utf-8")), expected)
 
-    def test_platform_failure_is_packaged_and_stale_success_is_rejected(self):
+    def test_platform_failure_is_packaged_and_missing_success_is_rejected(self):
         def download(kernel, path, **kwargs):
-            (Path(path) / "kernel.log").write_text("platform crashed")
+            for name, content in {"kernel.log": b"platform crashed", "nested/worker.log": b"worker failed\xff"}.items():
+                self.assertRegex(name, kwargs["file_pattern"])
+                log = Path(path) / name
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_bytes(content)
         api = SimpleNamespace(kernels_output=download)
         submission = {"timestamp": "test", "scripts": []}
         result, report = kaggle_run.fetch_result(api, "owner/kernel", submission, "error", self.root / "out")
         self.assertEqual(report["status"], "platform_error")
-        with zipfile.ZipFile(result) as archive:
-            self.assertEqual(archive.read("run.log"), b"platform crashed")
+        self.assertEqual(report["timestamp"], "test")
+        self.assertEqual(report["kaggle_status"], "error")
+        self.assertEqual(report["outputs"], {})
+        self.assertEqual(report["run_log"], "platform crashed\nworker failed\ufffd")
+        self.assertEqual(json.loads(result.read_text(encoding="utf-8")), report)
+        self.assertEqual(list(result.parent.iterdir()), [result])
         with self.assertRaisesRegex(RuntimeError, "without this submission"):
             kaggle_run.fetch_result(api, "owner/kernel", submission, "complete", self.root / "other")
+
+    def test_platform_failure_without_logs_has_fallback_diagnostics(self):
+        api = SimpleNamespace(kernels_output=lambda *args, **kwargs: None)
+        result, report = kaggle_run.fetch_result(api, "owner/kernel", {"timestamp": "cancelled"},
+                                                "cancelled", self.root / "out")
+        self.assertEqual(report["status"], "platform_error")
+        self.assertEqual(report["kaggle_status"], "cancelled")
+        self.assertIn("cancelled", report["run_log"])
+        self.assertEqual(report["outputs"], {})
+        self.assertEqual(json.loads(result.read_text(encoding="utf-8")), report)
+
+    def test_result_timestamp_mismatch_does_not_overwrite_local_result(self):
+        output = self.root / "out"
+        output.mkdir()
+        result = output / "submission-test.json"
+        result.write_text('"keep existing result"', encoding="utf-8")
+        def download(kernel, path, **kwargs):
+            (Path(path) / result.name).write_text(json.dumps({"timestamp": "other", "status": "complete"}))
+        with self.assertRaisesRegex(RuntimeError, "different submission"):
+            kaggle_run.fetch_result(SimpleNamespace(kernels_output=download), "owner/kernel",
+                                    {"timestamp": "test"}, "complete", output)
+        self.assertEqual(json.loads(result.read_text(encoding="utf-8")), "keep existing result")
+
+    def test_resume_prints_json_log_and_preserves_failure_exit_codes(self):
+        timestamp = "20261121T123456123456Z"
+        submission = {"timestamp": timestamp, "scripts": ["one.py"], "script_sha256": {}, "cache_owner": "owner"}
+        stage = self.root / "build/submissions" / timestamp
+        stage.mkdir(parents=True)
+        (stage / "submission.json").write_text(json.dumps(submission), encoding="utf-8")
+        (stage / "kernel-metadata.json").write_text(json.dumps({"id": "owner/kernel", "dataset_sources": []}))
+        for status, script_status, expected_exit in (("complete", "complete", 0), ("complete", "failed", 1),
+                                                      ("error", "complete", 1), ("error", None, 1)):
+            with self.subTest(status=status, script_status=script_status):
+                def download(kernel, path, **kwargs):
+                    if script_status is None:
+                        (Path(path) / "kernel.log").write_text("platform log", encoding="utf-8")
+                    else:
+                        report = {**submission, "status": script_status, "run_log": "script log", "outputs": {}}
+                        (Path(path) / f"submission-{timestamp}.json").write_text(json.dumps(report), encoding="utf-8")
+                api = SimpleNamespace(kernels_output=download)
+                stream = io.StringIO()
+                with (patch.object(kaggle_run, "PROJECT_ROOT", self.root),
+                      patch.object(kaggle_run, "get_api", return_value=api),
+                      patch.object(kaggle_run, "wait_for_run", return_value=status),
+                      patch.object(kaggle_run, "build_submission") as build,
+                      redirect_stdout(stream)):
+                    self.assertEqual(kaggle_run.main(["--resume", timestamp]), expected_exit)
+                build.assert_not_called()
+                self.assertIn("platform log" if script_status is None else "script log", stream.getvalue())
+                self.assertEqual([path.name for path in (self.root / "results").iterdir()],
+                                 [f"submission-{timestamp}.json"])
 
     def test_cancelled_status_does_not_poll_forever(self):
         api = SimpleNamespace(kernels_status=lambda _: SimpleNamespace(status=SimpleNamespace(name="CANCELLED")))
@@ -140,6 +228,38 @@ class RuntimeTests(unittest.TestCase):
         stage.mkdir()
         (stage / "submission.py").write_text(source)
         self.assertEqual(kaggle_run.staged_submission(stage), submission)
+
+
+class ComparisonInputTests(unittest.TestCase):
+    def test_read_run_uses_text_artifacts_from_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "submission-test.json"
+            row = {"prompt_id": 7, "acceptance_rate": 0.5}
+            metadata = {"config": {"prompt_ids": [7]}}
+            for prefix in ("", "demo_results/", "kaggle_working/demo_results/"):
+                with self.subTest(prefix=prefix):
+                    report = {"status": "complete", "outputs": {
+                        f"{prefix}baseline.jsonl": json.dumps(row) + "\n",
+                        f"{prefix}baseline_metadata.json": json.dumps(metadata),
+                    }}
+                    path.write_text(json.dumps(report), encoding="utf-8")
+                    self.assertEqual(read_run(path, "baseline"), ({7: row}, metadata))
+
+    def test_read_run_rejects_failed_ambiguous_and_binary_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "submission-test.json"
+            cases = [
+                ({"status": "failed", "outputs": {}}, "did not complete"),
+                ({"status": "complete", "outputs": {}}, "exactly one"),
+                ({"status": "complete", "outputs": {"a/baseline.jsonl": "", "b/baseline.jsonl": ""}}, "exactly one"),
+                ({"status": "complete", "outputs": {"baseline.jsonl": {"encoding": "base64", "data": "/w=="},
+                                                     "baseline_metadata.json": "{}"}}, "UTF-8"),
+            ]
+            for report, error in cases:
+                with self.subTest(report=report):
+                    path.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, error):
+                        read_run(path, "baseline")
 
 
 class CacheTests(unittest.TestCase):
