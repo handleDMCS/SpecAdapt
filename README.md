@@ -89,7 +89,7 @@ notebook environments, use `src/demo/demo_compare.py` after `src/demo/prepare_da
 the models once, rotates execution order, and writes both result sets.
 
 The result's `outputs` object contains `demo_results/{baseline,m1}.jsonl`, plus
-metadata and summary JSON strings. They include acceptance, accepted tokens per verification,
+metadata and summary objects. They include acceptance, accepted tokens per verification,
 throughput, bridge overhead, and token-level agreement with target-only decoding.
 After both finish, `uv run --locked python -m demo.compare_demo BASELINE.json M1.json` analyzes the two downloaded
 submission JSON files and writes `results/pair2_comparison.json`, including a paired bootstrap
@@ -115,10 +115,14 @@ uv run python -m demo.kaggle_run first.py second.py third.py
 Paths are relative to the project root, including paths supplied with PowerShell backslashes. Quote paths containing spaces. The scripts share one Python session and namespace, like consecutive notebook cells. Each script's `if __name__ == "__main__"` block runs. A failure stops the remaining scripts.
 
 Each submission produces one local file: `results\submission-<UTC-submission-timestamp>.json`.
+The CLI saves the indented report directly there, including when resuming an
+older submission. Reports with structured artifacts have `schema_version: 2`.
 Top-level fields contain `timestamp`, `scripts`, `script_sha256`, `cache_owner`,
 `status`, `error`, and `elapsed_seconds`. `run_log` holds captured stdout, stderr,
 subprocess output, and tracebacks. `outputs` maps relative artifact paths to
-UTF-8 strings; files that are not valid UTF-8 use
+structured JSON values for `.json` files and arrays of records for `.jsonl`
+files. Other UTF-8 artifacts, including malformed JSON or JSON Lines, stay as
+text. Files that are not valid UTF-8 use
 `{"encoding": "base64", "data": "<b64>"}`. Explicit writes to `/kaggle/working`
 use the `kaggle_working/` path prefix and are folded into the same JSON file.
 The CLI verifies the submission timestamp, prints `run_log`, and exits nonzero

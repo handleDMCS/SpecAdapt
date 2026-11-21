@@ -11,13 +11,14 @@ import math
 import os
 from pathlib import Path, PureWindowsPath
 import re
-import shutil
 import sys
 import tempfile
 import time
 import tokenize
 from urllib.parse import urlparse
 import zipfile
+
+from demo.kaggle_runtime import write_result
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__"}
@@ -157,7 +158,6 @@ def fetch_result(api, kernel: str, submission: dict, status: str, destination: P
             report = json.loads(downloaded.read_text(encoding="utf-8"))
             if report.get("timestamp") != submission["timestamp"]:
                 raise RuntimeError("Kaggle returned a different submission's result.")
-            shutil.copyfile(downloaded, result)
         else:
             if status == "complete":
                 raise RuntimeError("Kaggle completed without this submission's result JSON.")
@@ -167,8 +167,7 @@ def fetch_result(api, kernel: str, submission: dict, status: str, destination: P
             report = {**submission, "status": "platform_error", "kaggle_status": status,
                       "error": message, "elapsed_seconds": None,
                       "run_log": logs or f"{message}\n", "outputs": {}}
-            result.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    return result, report
+    return result, write_result(result, report)
 
 
 def positive_number(value: str) -> float:

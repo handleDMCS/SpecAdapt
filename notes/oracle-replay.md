@@ -1,8 +1,10 @@
 # Draft-only greedy oracle replay
 
-Implemented on 2026-11-21. This is a development benchmark against a fixed target
-trajectory. It removes target forward passes and target weight loading from
-repeat runs. It does not measure end-to-end speculative-decoding speedup.
+Implemented and measured on 2026-11-21. Reusing the recorded greedy target
+trajectory cut Kaggle script execution by **90–91%** across two fresh T4
+submissions. The time from command start to result download fell by **60%** in
+the first replay and **7%** in the second. Kaggle overhead dominated the slower
+repeat. These timings measure the adapter development workflow.
 
 ## What changed
 
@@ -121,11 +123,32 @@ model execution run on Kaggle. All 44 synthetic tests passed on Kaggle CPU in
 This includes the previous JSON-result refactor's tests. Source syntax checks,
 the test-suite staging dry run, and `git diff --check` also passed.
 
-Runtime measurements will use the same 12 GSM8K
-test prompts, `max_new_tokens = 512`, K=3, seed, T4 configuration, and bundled
-training cache for one full M1 run and two independent oracle submissions.
-This avoids attributing shorter prompts or a lower token limit to the oracle.
+The runtime comparison used the same 12 GSM8K test prompts,
+`max_new_tokens = 512`, K=3, seed 42, pinned Tesla T4 environment, and bundled
+training cache. All three submissions used identical sources and Kaggle
+settings. The replay bundles added only the reference TOML.
 
-Measurements and the final verdict are pending the remote runs. The report will
-separate decoding time, setup-inclusive benchmark time, remote submission time,
-and local submission-to-result time (which includes queue/startup/polling).
+| Run | Command to result | Kaggle script execution | Benchmark with setup | Decoding loop |
+|---|---:|---:|---:|---:|
+| [Full M1 and reference recording](../results/submission-20261121T045555104115Z.json) | 842.6 s | 807.0 s | 793.7 s | 571.2 s |
+| [First M1 replay](../results/submission-20261121T052243824146Z.json) | 340.3 s | 80.2 s | 75.9 s | 12.6 s |
+| [Second M1 replay](../results/submission-20261121T052835364777Z.json) | 780.2 s | 71.4 s | 68.4 s | 12.6 s |
+
+Command to result includes cache discovery, queueing, startup, polling, and
+download. Kaggle script execution includes `prepare_data.py` and the benchmark.
+Decoding time for the full run includes 228.1 s of target-only generation and
+343.1 s of live M1 decoding. The second replay spent 708.8 s outside the scripts,
+versus 260.1 s for the first. Both replays saved more than 12 minutes of script
+execution, with command-to-result savings of 8m 22s and 1m 02s, respectively,
+against the measured 14m 03s full run.
+
+Both replays loaded only `llama_68m` weights and reproduced all 3,423 recorded
+target tokens. They returned identical per-prompt acceptance and bridge counters.
+Acceptance was 27.89% for replay and 27.87% for live M1. On prompt 10, live M1
+diverged from the target-only output, which also changed its proposal counts.
+
+The extracted `target_references.toml` is ready for repeated runs in this
+workspace. The target-only entry point passed staging validation. The timed
+comparison recorded its references as part of the full M1 run.
+
+[Machine-readable runtime comparison](../results/oracle_runtime_comparison.json)

@@ -76,9 +76,10 @@ This prepares source data only. Test/calibration subsets and model execution bel
 
 Each submission returns `results\submission-<UTC-submission-timestamp>.json`:
 
+- `schema_version`: `2` for the readable format. The CLI upgrades older reports when downloading them.
 - Top-level `timestamp`, `scripts`, `script_sha256`, `cache_owner`, `status`, `error`, and `elapsed_seconds`: submission metadata.
 - `run_log`: stdout, stderr, subprocess output and tracebacks in execution order.
-- `outputs`: relative artifact paths mapped to UTF-8 strings, or `{"encoding": "base64", "data": "<b64>"}` for files that are not valid UTF-8. Explicit writes to `/kaggle/working` use keys starting with `kaggle_working/`.
+- `outputs`: relative artifact paths mapped to native values for `.json`, arrays of records for `.jsonl`, and strings for other UTF-8 files. Malformed JSON artifacts stay as strings for inspection. Binary files use `{"encoding": "base64", "data": "<b64>"}`. Explicit writes to `/kaggle/working` use keys starting with `kaggle_working/`.
 
 For example, the GPU check's text is in `outputs["cuda_spec.txt"]`. The CLI verifies the timestamp and prints `run_log`. If a script fails, the JSON result retains diagnostics and partial outputs, and the CLI returns a nonzero exit code. If Kaggle fails before producing the result file, the CLI synthesizes a JSON result with `status: "platform_error"`, `kaggle_status`, available downloaded logs in `run_log`, and `outputs: {}`. A completed job missing its expected result is an error.
 

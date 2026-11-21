@@ -14,6 +14,8 @@ import tokenize
 import traceback
 import types
 
+RESULT_SCHEMA_VERSION = 2
+
 
 @contextmanager
 def capture_output(path: Path):
@@ -73,12 +75,52 @@ def file_hash(path: Path) -> bytes:
         return hashlib.file_digest(stream, "sha256").digest()
 
 
-def artifact_content(path: Path) -> str | dict[str, str]:
+def structure_artifact(path: Path, content: str) -> object:
+    """Embed JSON documents and JSON Lines records as native JSON values."""
+    suffix = path.suffix.lower()
+    if suffix not in {".json", ".jsonl"}:
+        return content
+
+    text = content.removeprefix("\ufeff")
+    try:
+        if suffix == ".json":
+            value = json.loads(text)
+        else:
+            value = [json.loads(line) for line in text.split("\n") if line.strip()]
+        # Keep artifacts with non-finite numbers or invalid Unicode as text.
+        # They must not prevent the containing report from being written.
+        json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        return value
+    except (ValueError, RecursionError):
+        return content
+
+
+def artifact_content(path: Path) -> object:
     content = path.read_bytes()
     try:
-        return content.decode("utf-8")
+        text = content.decode("utf-8")
     except UnicodeDecodeError:
         return {"encoding": "base64", "data": base64.b64encode(content).decode("ascii")}
+    return structure_artifact(path, text)
+
+
+def write_result(path: Path, report: dict) -> dict:
+    """Save a report in the standard readable format, upgrading legacy artifacts once."""
+    version = report.get("schema_version", 1)
+    report = {"schema_version": version, **report}
+    if version == 1:
+        report["schema_version"] = RESULT_SCHEMA_VERSION
+        report["outputs"] = {
+            name: structure_artifact(Path(name), value) if isinstance(value, str) else value
+            for name, value in report["outputs"].items()
+        }
+    report["run_log"] = report.pop("run_log")
+    # Replace the previous file only after successfully writing the whole report.
+    with tempfile.TemporaryDirectory(prefix=".specadapt-result-", dir=path.parent) as directory:
+        pending = Path(directory) / path.name
+        pending.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        pending.replace(path)
+    return report
 
 
 def run_submission(project_root: Path, submission: dict, output_root: Path | None = None) -> Path:
@@ -120,9 +162,8 @@ def run_submission(project_root: Path, submission: dict, output_root: Path | Non
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
-        report = {**submission, "status": status, "error": error_message,
+        report = {"schema_version": RESULT_SCHEMA_VERSION, **submission, "status": status, "error": error_message,
                   "elapsed_seconds": round(time.monotonic() - started, 3)}
-        report["run_log"] = log.read_text(encoding="utf-8", errors="replace")
         report["outputs"] = {}
         for artifact in sorted(work.rglob("*")):
             relative = artifact.relative_to(work)
@@ -133,8 +174,9 @@ def run_submission(project_root: Path, submission: dict, output_root: Path | Non
         for artifact in sorted(new_outputs):
             if artifact.is_file() and not artifact.is_symlink():
                 report["outputs"][f"kaggle_working/{artifact.relative_to(output_root).as_posix()}"] = artifact_content(artifact)
+        report["run_log"] = log.read_text(encoding="utf-8", errors="replace")
         # Store metadata outside the scripts' work directory to avoid collisions.
-        result.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        write_result(result, report)
         # Fold explicit /kaggle/working writes into the same JSON as relative
         # writes, removing only files created by this submission.
         for artifact in sorted(new_outputs, key=lambda path: len(path.parts), reverse=True):

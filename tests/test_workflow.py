@@ -73,7 +73,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.name, "submission-test.json")
         self.assertEqual(list(outputs.iterdir()), [result])
         report = json.loads(result.read_text(encoding="utf-8"))
-        self.assertEqual(set(report), {*submission, "status", "error", "elapsed_seconds", "run_log", "outputs"})
+        self.assertEqual(set(report), {*submission, "schema_version", "status", "error", "elapsed_seconds", "run_log", "outputs"})
+        self.assertEqual(report["schema_version"], 2)
         for key, value in submission.items():
             self.assertEqual(report[key], value)
         self.assertEqual(report["status"], "complete")
@@ -103,6 +104,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(report["outputs"], {"partial.txt": "partial output"})
         self.assertEqual(list(result.parent.iterdir()), [result])
 
+    def test_json_artifacts_are_structured_and_incomplete_json_is_preserved(self):
+        outputs = self.root / "outputs"
+        self.script("one.py", "from pathlib import Path\n"
+                    "Path('metrics.json').write_text('{\"nested\": {\"acceptance\": 0.5}}')\n"
+                    "Path('partial.jsonl').write_text('{\"step\": 1}\\n{\"step\":')\n"
+                    "Path('nonfinite.json').write_text('{\"score\": NaN}')\n"
+                    f"Path({str(outputs / 'rows.jsonl')!r}).write_text('{{\"step\": 1}}\\n{{\"step\": 2}}\\n')\n")
+        result = run_submission(self.project, {"timestamp": "test", "scripts": ["one.py"], "cache_owner": "owner"},
+                                outputs)
+        report = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["outputs"], {
+            "metrics.json": {"nested": {"acceptance": 0.5}},
+            "partial.jsonl": '{"step": 1}\n{"step":',
+            "nonfinite.json": '{"score": NaN}',
+            "kaggle_working/rows.jsonl": [{"step": 1}, {"step": 2}],
+        })
+        self.assertEqual(list(outputs.iterdir()), [result])
+
     def test_submission_restores_environment_and_working_directory(self):
         self.script("one.py", "pass\n")
         before = {key: os.environ.get(key) for key in ("SPECADAPT_PROJECT_ROOT", "SPECADAPT_CACHE_OWNER")}
@@ -129,11 +149,19 @@ class RuntimeTests(unittest.TestCase):
 
     def test_result_download_leaves_one_file_and_preserves_failure_status(self):
         submission = {"timestamp": "test", "scripts": []}
-        expected = {**submission, "status": "failed", "run_log": "traceback", "outputs": {"partial.txt": "partial"}}
+        legacy = {**submission, "status": "failed", "run_log": "traceback", "outputs": {
+            "partial.txt": "partial", "metrics.json": '{"score": 0.5}', "rows.jsonl": '{"step": 1}\n',
+            "value.json": '"true"',
+        }}
+        expected = {**legacy, "schema_version": 2, "outputs": {
+            "partial.txt": "partial", "metrics.json": {"score": 0.5}, "rows.jsonl": [{"step": 1}],
+            "value.json": "true",
+        }}
+        payload = legacy
         def download(kernel, path, **kwargs):
             self.assertRegex("submission-test.json", kwargs["file_pattern"])
             self.assertIsNone(re.search(kwargs["file_pattern"], "submission-other.json"))
-            (Path(path) / "submission-test.json").write_text(json.dumps(expected), encoding="utf-8")
+            (Path(path) / "submission-test.json").write_text(json.dumps(payload), encoding="utf-8")
             (Path(path) / "extra-sdk.log").write_text("platform log")
         output = self.root / "downloaded"
         result, report = kaggle_run.fetch_result(SimpleNamespace(kernels_output=download), "owner/kernel", submission, "complete", output)
@@ -141,6 +169,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.name, "submission-test.json")
         self.assertEqual(report, expected)
         self.assertEqual(json.loads(result.read_text(encoding="utf-8")), expected)
+        # Downloading a current report must not turn a JSON string into a boolean.
+        payload = expected
+        _, report = kaggle_run.fetch_result(SimpleNamespace(kernels_output=download), "owner/kernel", submission, "complete", output)
+        self.assertEqual(report, expected)
 
     def test_platform_failure_is_packaged_and_missing_success_is_rejected(self):
         def download(kernel, path, **kwargs):
@@ -231,19 +263,20 @@ class RuntimeTests(unittest.TestCase):
 
 
 class ComparisonInputTests(unittest.TestCase):
-    def test_read_run_uses_text_artifacts_from_json(self):
+    def test_read_run_accepts_both_structured_and_legacy_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "submission-test.json"
             row = {"prompt_id": 7, "acceptance_rate": 0.5}
             metadata = {"config": {"prompt_ids": [7]}}
             for prefix in ("", "demo_results/", "kaggle_working/demo_results/"):
-                with self.subTest(prefix=prefix):
-                    report = {"status": "complete", "outputs": {
-                        f"{prefix}baseline.jsonl": json.dumps(row) + "\n",
-                        f"{prefix}baseline_metadata.json": json.dumps(metadata),
-                    }}
-                    path.write_text(json.dumps(report), encoding="utf-8")
-                    self.assertEqual(read_run(path, "baseline"), ({7: row}, metadata))
+                for rows_value, metadata_value in (([row], metadata), (json.dumps(row) + "\n", json.dumps(metadata))):
+                    with self.subTest(prefix=prefix, format=type(rows_value).__name__):
+                        report = {"status": "complete", "outputs": {
+                            f"{prefix}baseline.jsonl": rows_value,
+                            f"{prefix}baseline_metadata.json": metadata_value,
+                        }}
+                        path.write_text(json.dumps(report), encoding="utf-8")
+                        self.assertEqual(read_run(path, "baseline"), ({7: row}, metadata))
 
     def test_read_run_rejects_failed_ambiguous_and_binary_results(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -253,7 +286,7 @@ class ComparisonInputTests(unittest.TestCase):
                 ({"status": "complete", "outputs": {}}, "exactly one"),
                 ({"status": "complete", "outputs": {"a/baseline.jsonl": "", "b/baseline.jsonl": ""}}, "exactly one"),
                 ({"status": "complete", "outputs": {"baseline.jsonl": {"encoding": "base64", "data": "/w=="},
-                                                     "baseline_metadata.json": "{}"}}, "UTF-8"),
+                                                     "baseline_metadata.json": "{}"}}, "as JSON"),
             ]
             for report, error in cases:
                 with self.subTest(report=report):

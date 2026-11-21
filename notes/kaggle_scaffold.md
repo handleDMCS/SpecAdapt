@@ -85,7 +85,7 @@ Script paths must be **relative to the project root**. PowerShell backslashes wo
 
 - Top-level `timestamp`, `scripts`, `script_sha256`, `cache_owner`, `status`, `error`, and `elapsed_seconds`: submission metadata.
 - `run_log`: combined script output; displayed after completion, without live script-log streaming.
-- `outputs`: maps each new/modified project file's relative path to its UTF-8 string content. Files that are not valid UTF-8 use `{"encoding": "base64", "data": "<b64>"}`. Explicit new `/kaggle/working` files use keys prefixed with `kaggle_working/` and are removed after collection, leaving the result JSON.
+- `outputs`: maps each new or modified project file's relative path to its content. `.json` files become native JSON values, `.jsonl` files become arrays, and other UTF-8 files stay as strings. Malformed JSON and JSON Lines stay as strings for diagnosis. Binary files use `{"encoding": "base64", "data": "<b64>"}`. New `/kaggle/working` files use keys prefixed with `kaggle_working/` and are removed after collection.
 
 Script failures retain their traceback and partial artifacts. If a platform failure
 produces no result file, the CLI synthesizes the same JSON container with

@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import random
 
+from demo.kaggle_runtime import structure_artifact
+
 
 def read_run(path, mode):
     report = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -18,11 +20,14 @@ def read_run(path, mode):
     if len(candidates) != 1:
         raise ValueError(f"Expected exactly one {mode}.jsonl in {path}")
     meta_path = candidates[0].removesuffix(".jsonl") + "_metadata.json"
-    contents, meta_contents = outputs[candidates[0]], outputs[meta_path]
-    if not isinstance(contents, str) or not isinstance(meta_contents, str):
-        raise ValueError(f"Expected UTF-8 benchmark results and metadata in {path}")
-    rows = [json.loads(line) for line in contents.splitlines()]
-    metadata = json.loads(meta_contents)
+    rows, metadata = outputs[candidates[0]], outputs.get(meta_path)
+    if isinstance(rows, str):
+        rows = structure_artifact(Path(candidates[0]), rows)
+    if isinstance(metadata, str):
+        metadata = structure_artifact(Path(meta_path), metadata)
+    if (not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows)
+            or not isinstance(metadata, dict) or "config" not in metadata):
+        raise ValueError(f"Expected benchmark rows and metadata as JSON in {path}")
     if len({row["prompt_id"] for row in rows}) != len(rows):
         raise ValueError("Duplicate prompt IDs")
     if {row["prompt_id"] for row in rows} != set(metadata["config"]["prompt_ids"]):
