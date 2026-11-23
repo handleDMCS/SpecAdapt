@@ -72,9 +72,15 @@ class BridgeTests(unittest.TestCase):
             def apply_chat_template(self, messages, **kwargs):
                 self_test.assertEqual(kwargs, dict(tokenize=False, add_generation_prompt=True))
                 return "<user>" + messages[0]["content"] + "<assistant>"
+        class VicunaTokenizer:
+            chat_template = None
         self_test = self
         self.assertEqual(draft_prompt("hello"), "hello\n\n")
         self.assertEqual(target_prompt(Tokenizer(), "hello"), "<user>hello<assistant>")
+        self.assertEqual(target_prompt(VicunaTokenizer(), "hello"),
+                         "A chat between a curious user and an artificial intelligence assistant. "
+                         "The assistant gives helpful, detailed, and polite answers to the user's questions. "
+                         "USER: hello ASSISTANT:")
 
     def test_text_bridge_preserves_left_whitespace(self):
         class Tokenizer:

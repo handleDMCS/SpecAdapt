@@ -77,7 +77,9 @@ class DecoderTests(unittest.TestCase):
         with patch("torch.cuda.synchronize"):
             results = {mode: generate(Model(), Model(True), tokenizer, tokenizer, "ab ab ab",
                                       mode=mode, k=3, max_new_tokens=17)
-                       for mode in ("target", "baseline", "m1")}
+                       for mode in ("baseline", "m1")}
+            results["target"] = generate(Model(), None, tokenizer, None, "ab ab ab", mode="target",
+                                         max_new_tokens=17)
             from specadapt.bridge import FrozenContinuationCache
             wrong_seed = FrozenContinuationCache([[97, 98, 97, 120, 121, 122]])
             seeded = generate(Model(), Model(True), tokenizer, tokenizer, "question",
@@ -89,7 +91,11 @@ class DecoderTests(unittest.TestCase):
                         for mode in ("baseline", "m1")}
             replayed_seed = generate(None, Model(True), tokenizer, tokenizer, "question",
                                     mode="m1", k=3, max_new_tokens=17, seed_cache=wrong_seed, oracle=oracle)
+            with patch("specadapt.decoding.text_proposal", side_effect=AssertionError("unexpected retokenization")):
+                same_vocab = generate(Model(), Model(True), tokenizer, tokenizer, "ab ab ab", mode="baseline",
+                                      k=3, max_new_tokens=17, same_tokenizer=True)
         self.assertEqual(results["target"]["token_ids"], [97, 98] * 8 + [97])
+        self.assertEqual(same_vocab["token_ids"], results["target"]["token_ids"])
         for mode in ("baseline", "m1"):
             self.assertEqual(results[mode]["token_ids"], results["target"]["token_ids"])
         self.assertGreater(results["m1"]["cache_rounds"], 0)

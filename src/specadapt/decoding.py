@@ -19,6 +19,10 @@ def draft_prompt(prompt):
 
 
 def target_prompt(tokenizer, prompt):
+    if getattr(tokenizer, "chat_template", "") is None:
+        return ("A chat between a curious user and an artificial intelligence assistant. "
+                "The assistant gives helpful, detailed, and polite answers to the user's questions. "
+                f"USER: {prompt} ASSISTANT:")
     return tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
                                          tokenize=False, add_generation_prompt=True)
 
@@ -69,7 +73,7 @@ class CachedModel:
 
 
 def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
-             max_new_tokens=128, k=3, use_cache=True, seed_cache=None, oracle=None):
+             max_new_tokens=128, k=3, use_cache=True, seed_cache=None, oracle=None, same_tokenizer=False):
     import torch
     if mode not in {"target", "baseline", "m1"}:
         raise ValueError(mode)
@@ -93,7 +97,7 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
         eos = set(eos if isinstance(eos, list) else [eos])
     else:
         eos = oracle.eos_token_ids
-    draft_eos = {draft_tokenizer.eos_token_id}
+    draft_eos = set() if mode == "target" else {draft_tokenizer.eos_token_id}
     rounds = accepted = proposed_count = draft_tokens = cache_rounds = 0
     bridge_seconds = 0.0
     torch.cuda.synchronize()
@@ -127,6 +131,8 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
                 bridge_start = time.perf_counter()
                 if bridge:
                     candidates = bridge.map(context, raw, target_ids + generated)
+                elif same_tokenizer:
+                    candidates = raw
                 else:
                     candidates = text_proposal(draft_tokenizer, target_tokenizer, context, raw,
                                                target_ids + generated, k)
@@ -175,4 +181,6 @@ def generate(target, draft, target_tokenizer, draft_tokenizer, prompt, *, mode,
         result["verification"] = "oracle"
         result["replay_seconds"] = result.pop("seconds")
         result.pop("tokens_per_second")
+    else:
+        result.update(target_model_seconds=target_state.seconds, target_steps=target_state.steps)
     return result

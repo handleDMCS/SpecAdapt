@@ -16,13 +16,17 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def make_contract(plan, tokenizer, eos_token_ids, versions, gpu):
+def tokenizer_digest(tokenizer):
     tokenizer_state = dict(vocab=tokenizer.get_vocab(), special_tokens=tokenizer.special_tokens_map,
                            chat_template=tokenizer.chat_template,
                            backend=tokenizer.backend_tokenizer.to_str())
+    return digest(tokenizer_state)
+
+
+def make_contract(plan, tokenizer, eos_token_ids, versions, gpu):
     return dict(target=next(m for m in plan["models"] if m["key"] == "qwen_7b"),
                 dataset=next(d for d in plan["datasets"] if d["key"] == "gsm8k"),
-                split="test", tokenizer_sha256=digest(tokenizer_state),
+                split="test", tokenizer_sha256=tokenizer_digest(tokenizer),
                 eos_token_ids=sorted(eos_token_ids), settings=TARGET_SETTINGS,
                 versions=versions, gpu=gpu)
 

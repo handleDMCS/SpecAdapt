@@ -53,7 +53,7 @@ files = ["full/prompt/0000.parquet", "full/test/0000.parquet", "full/train/0000.
 [[datasets]]
 key = "alpaca"
 repo = "tatsu-lab/alpaca"
-revision = "3483b222444e0d1e807e24178d720f80ee6a121a"
+revision = "3c2d40e7db7d37f75b9cfd5b2685762a1c3c9ae8"
 files = ["default/train/0000.parquet"]
 
 [[datasets]]
