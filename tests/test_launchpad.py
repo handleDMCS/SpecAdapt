@@ -168,6 +168,19 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "run/summary.json").read_text()), {"verdict": "fail"})
 
 
+class WatchTests(unittest.TestCase):
+    def test_log_events_are_parsed_and_filtered(self):
+        from demo.kaggle_watch import is_progress, parse_event
+
+        line = 'data: {"stream_name":"stdout","time":11.7,"data":"[heartbeat 03:57:32Z] phase=probe step=1/12\\n"}'
+        event = parse_event(line)
+        self.assertEqual(event["time"], 11.7)
+        self.assertTrue(is_progress(event["data"]))
+        self.assertFalse(is_progress("Fetching 8 files:  50%"))
+        for other in ("", "event: ping", "data: not json", 'data: {"time": 1}'):
+            self.assertIsNone(parse_event(other))
+
+
 class SubmitTests(unittest.TestCase):
     def test_kernel_name_sets_matching_id_and_title(self):
         metadata = kaggle_run.name_kernel({"id": "owner/specAdapt", "title": "specAdapt"}, "p2-smoke")
