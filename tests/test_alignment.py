@@ -1,6 +1,9 @@
 """CPU checks for draft-only training and the oracle join."""
 
+import json
+import os
 from pathlib import Path
+import tempfile
 import tomllib
 from types import SimpleNamespace
 import unittest
@@ -8,7 +11,14 @@ from unittest.mock import patch
 
 from demo.oracle import digest
 from training.build_training_inputs import join_rows
-from training.kaggle.train_pair import attach, checked_merge, grid, select_rows
+from demo import kaggle_runtime as runtime
+from training.kaggle.train_pair import Progress, attach, checked_merge, grid, run_tiers, select_rows, tier_order
+
+JOBS = Path(__file__).resolve().parents[1] / "training/jobs"
+
+
+def load_job(name):
+    return tomllib.loads((JOBS / f"{name}.toml").read_text())
 
 try:
     import torch
@@ -97,8 +107,73 @@ class TrainingJoinTests(unittest.TestCase):
         self.assertEqual([row["n"] for row in val], list(range(10)) * 4)
         for full in configs[1:]:
             self.assertEqual({key: full[key] for key in ("t1", "t2")}, {key: smoke[key] for key in ("t1", "t2")})
-            self.assertEqual([(len(trials), len(epochs)) for trials, epochs in grid(full).values()], [(6, 1), (3, 2)])
+            self.assertEqual([(len(trials), len(epochs)) for trials, epochs in grid(full).values()], [(3, 2), (6, 1)])
         self.assertEqual([(len(trials), len(epochs)) for trials, epochs in grid(smoke).values()], [(1, 1), (1, 1)])
+
+
+class TierOrderTests(unittest.TestCase):
+    def test_jobs_run_lora_first_and_default_keeps_the_old_order(self):
+        for name in ("p2-smoke", "p2", "p1", "p4"):
+            job = load_job(name)
+            self.assertEqual(list(grid(job)), ["T2", "T1"], name)
+            del job["tier_order"]
+            self.assertEqual(list(grid(job)), ["T1", "T2"], name)
+        job = load_job("p2")
+        self.assertEqual(list(grid(dict(job, tier_order=["T1"]))), ["T1"])
+        for bad in ([], ["T2", "T2"], ["T3"], ["B1", "T2"]):
+            with self.assertRaisesRegex(ValueError, "tier_order"):
+                tier_order(dict(job, tier_order=bad))
+
+    def test_short_path_is_p2_with_lora_only_and_one_learning_rate(self):
+        short, full = load_job("p2-lora"), load_job("p2")
+        self.assertEqual((short.pop("tier_order"), short.pop("max_minutes")), (["T2"], 60))
+        self.assertEqual(short.pop("t2"), dict(full["t2"], learning_rates=[0.0003]))
+        for key in ("tier_order", "max_minutes", "t2"):
+            full.pop(key)
+        self.assertEqual(short, full)
+        self.assertEqual(grid(load_job("p2-lora")), {"T2": ([dict(rank=16, lr=0.0003, epochs=4)], [2, 4])})
+
+
+@unittest.skipIf(torch is None, "PyTorch is required for adapter and trainer checks")
+class ResultLineTests(unittest.TestCase):
+    def test_each_tier_reports_its_result_live_before_the_next_tier_trains(self):
+        events, lines = [], []
+        b1 = 0.2
+        per_tier = {"T2": 0.25, "T1": 0.21}
+        summary = dict(tiers={"B1": dict(acceptance=b1)})
+
+        def train_and_replay(tier, configs, checkpoints):
+            model = TinyDraft()
+            attach(model, tier, dict(configs[0], rank=2))
+            events.append(("train", tier))
+            self.assertEqual(len(adapter_parameters(model)), 14 if tier == "T2" else 3)
+            summary["tiers"][tier] = dict(acceptance=per_tier[tier], per_task={
+                task: dict(acceptance=per_tier[tier] + offset / 100)
+                for offset, task in enumerate(("math", "code", "instruction", "summarization"))})
+
+        def emit(line):
+            events.append(("line", line.split("] ", 1)[1].split()[1]))
+            lines.append(line)
+            return line
+
+        previous = os.getcwd()
+        with tempfile.TemporaryDirectory() as folder:
+            os.chdir(folder)
+            try:
+                Path("artifacts").mkdir()
+                progress = Progress()
+                with patch.object(runtime, "_emit", side_effect=emit):
+                    run_tiers(load_job("p2-smoke"), summary, progress, train_and_replay)
+                written = json.loads(Path("summary.json").read_text())
+            finally:
+                os.chdir(previous)
+        self.assertEqual(events, [("train", "T2"), ("line", "tier=T2"), ("train", "T1"), ("line", "tier=T1")])
+        self.assertIsNone(progress.state, "The keepalive must not repeat the result line.")
+        fields = dict(part.split("=", 1) for part in lines[0].split("] ", 1)[1].split())
+        self.assertEqual(fields, dict(phase="result", tier="T2", acceptance="0.25", b1="0.2", gain_pp="5",
+                                      math="0.25", code="0.26", instruction="0.27", summarization="0.28"))
+        self.assertAlmostEqual(written["t2_gain_pp"], 5)
+        self.assertAlmostEqual(written["t1_gain_pp"], 1)
 
 
 @unittest.skipIf(torch is None, "PyTorch is required for adapter and trainer checks")

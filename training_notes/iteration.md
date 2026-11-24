@@ -1,30 +1,32 @@
 # Today's plan: train on the recorded oracles
 
-2026-11-24. Kaggle T4 only, $0 Modal. Data: the oracle dump at `results/modal/20261123T154925641802Z/oracle-dump/` (1,440 fit, 320 val per target). Pairs with a recorded target: **P2** (`llama_68m` → `qwen_7b`, first), **P1** (`llama_68m` → `vicuna_7b`), **P4** (`llama_160m` → `qwen_7b`).
+2026-11-24. Kaggle T4 only, $0 Modal. Data: the oracle dump at `results/modal/20261123T154925641802Z/oracle-dump/` (1,440 fit, 320 val per target). Pairs with a recorded target: **P2** (`llama_68m` → `qwen_7b`), **P1** (`llama_68m` → `vicuna_7b`), **P4** (`llama_160m` → `qwen_7b`).
 
-**Done today means:** one validation table per pair with B1, T1, T2 acceptance at fixed `K = 3`, and adapter weights saved. Stretch: T0 and the `K` policies on P2.
+**Priority: one complete P2 result as early as possible, LoRA (T2) before T1.** P1, P4 and the `K` policies follow in a later session and reuse everything unchanged.
 
-| # | What | Model | Needs | Agent session | Job wall time | Yields | GPU-h |
+**First milestone:** a P2 validation table with B1 and T2 acceptance at fixed `K = 3`, overall and per task, and the LoRA weights saved. T1 lands in the same run, after T2.
+
+| # | What | Model | Status / needs | Agent session | Job wall time | Yields | GPU-h |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Launch pad: detach, heartbeat, weights out | OPUS | | 45–60 min | two CPU probes, 5 min each | Detached submit and a live log | 0 |
-| 2 | Data + trainer | SOL | | 60–90 min | CPU suite, 5 min | Training-inputs dataset, job ready to fire | 0 |
-| 3 | Smoke, then you launch P2 | OPUS | 1, 2 | 20 min | smoke 15 min, then P2 60 min | Pipeline proven; P2 table (B1, T1, T2) | 1.25 |
-| 4 | Read P2, launch P1 and P4 | you | 3 | none | P1 55 min, P4 2–2.5 h, side by side | P1 and P4 tables | 3.25 |
-| 5 | `K` policies (stretch) | SOL | 2; fire after P2 | 60–90 min | 2 h | P2 T0 and logistic-policy numbers | 2 |
+| 1 | Launch pad | OPUS | Done, `1f42541` | | | Detached submit, live log, weights out | 0 |
+| 2 | Data + trainer | SOL | Done, `d42d173` | | | Training-inputs dataset, `train_pair.py`, job TOMLs | 0 |
+| 3 | LoRA first, fire smoke and P2 together | OPUS | Next | 25–30 min | smoke 15 min; P2 about 70 min, T2 numbers at about 45 min | P2 table (B1, T2, then T1), weights | 1.5 |
+| 4 | Collect P2 and branch | you | After 3 | none | 2 min | P2 `summary.json` and weights on disk | 0 |
+| 6 | P1 and P4 | you | Later session | none | P1 55 min, P4 2–2.5 h, side by side | P1 and P4 tables | 3.25 |
+| 5 | `K` policies on P2 | SOL | Later session | 60–90 min | 2 h | P2 T0 and logistic-policy numbers | 2 |
 
-1 and 2 run in parallel. 5 can be written while P2 trains. Total about 6.5 of 30 GPU-hours.
-
-**Time to result, from a start now**
+**Time to the first P2 result, counted from the start of iteration 3**
 
 | Milestone | Elapsed |
 | --- | --- |
-| 1 and 2 done | 1.5 h |
-| Smoke verdict | 2.25 h |
-| P2 table, the first real answer | 3.25 h |
-| P1 and P4 tables, "done today" | 5.5–6 h |
-| Stretch: `K` policies on P2 | 5.5–6 h if Kaggle accepts a third concurrent GPU session, otherwise about 8 h |
+| Smoke and P2 fired | 0:30 |
+| Smoke verdict | 0:45 |
+| T2 numbers on the live log (`phase=result tier=T2`) | 1:15 |
+| P2 run complete, summary and weights on disk | 1:45 |
+| Same, if the smoke fails once and is fixed in one session | 2:45 |
+| Short path `p2-lora` (B1 and T2 only, one learning rate), from its own firing | 0:40 |
 
-All of these are estimates. The replay times come from one measurement: 340 s for 120 prompt replays on T4, about 2.2 s per prompt at `K = 3` with the 68M drafter. P4 is scaled from the stage 1 step ratio (the 160M drafter step is about 3.7 times slower). Training time is a guess until the smoke reports minutes per phase; the smoke's `summary.json` is where these numbers get corrected. Agent session times are guesses too.
+These are estimates. Replay is measured at about 2.2 s per prompt (`K = 3`, 68M drafter). Training time is a guess until the smoke reports minutes per phase.
 
 ## GPU config
 
@@ -47,8 +49,9 @@ Defaults I am choosing for training. They are starting points; the worker may ch
 | Batching | Length-sorted, at most 16 sequences and 16,000 tokens per batch for `llama_68m`; 8 and 8,000 for `llama_160m` | XSum prompts run long (the drafter limit is context minus 512). On out-of-memory, halve and retry once, then abort. |
 | Optimizer | AdamW, no weight decay on the adapters, linear warmup over 5% of steps then cosine | Standard for small LoRA fits. |
 | Seed | 42 for subset choice, shuffling and init | Matches `splits.toml`. |
-| `max_minutes` | Smoke 20, P2 120, P1 120, P4 240, `K` policies 180 | About twice the estimate. Kaggle ends a session at 12 hours regardless. |
-| Concurrency | One job per kernel. P1 and P4 side by side. | If Kaggle refuses a second GPU session, run P4 first. |
+| `max_minutes` | Smoke 20, P2 120, `p2-lora` 60, P1 120, P4 240, `K` policies 180 | About twice the estimate. Kaggle ends a session at 12 hours regardless. |
+| Tier order | T2 (LoRA) before T1 in every job | The LoRA result is needed first; T1 follows in the same run. |
+| Concurrency | One job per kernel. Smoke and P2 side by side, later P1 and P4. | If Kaggle refuses a second GPU session, run them one after the other. |
 
 Every job writes its actual config to `summary.json`: GPU name, torch and package versions, precision, batch limits, seed, Git SHA.
 
@@ -66,112 +69,68 @@ Every job writes its actual config to `summary.json`: GPU name, torch and packag
 
 ---
 
-## 1 · Launch pad · OPUS
+## Done
+
+- **1 · Launch pad · OPUS.** `--detach`, `--kernel`, `--job`, `heartbeat()`, `artifacts/`, `kaggle_watch`. See the Log in [progress.md](progress.md).
+- **2 · Data and trainer · SOL.** Private dataset `dungg1810/specadapt-train-inputs`, `src/specadapt/alignment.py`, `training/kaggle/train_pair.py` (already heartbeats, writes `summary.json` and `artifacts/`), job TOMLs `p2-smoke`, `p2`, `p1`, `p4`. CPU suite 69/69.
+
+## 3 · LoRA first, fire smoke and P2 together · OPUS
+
+The trainer currently runs B1, then all of T1, then T2. T2 is the result needed first, so it moves to the front. The smoke and the full run start together: GPU hours are plentiful (about 30 unused this week) and wall time is the scarce resource, so the smoke acts as an early warning instead of a gate.
 
 ```text
-Iteration 1. Read training_notes/iteration.md "Rules for every worker" and block 1.
+Iteration 3. Read training_notes/iteration.md "GPU config", "Rules for every worker" and block 3,
+then training/kaggle/train_pair.py and training/jobs/p2.toml. Iterations 1 and 2 are committed.
+Keep the change set small: every edit here sits in front of a time-critical run.
 
-Today kaggle_run blocks until the kernel ends, and kaggle_runtime redirects stdout into a file, so the
-Kaggle log page is blank during a run. Fix that with the smallest change that works. CPU kernels only.
-
-1. Commit the working tree as it is (modal/ scripts, training_notes/, the two deleted notes).
-2. src/demo/kaggle_run.py: `--detach` (push, print timestamp + kernel URL + the --resume command,
-   exit 0) and `--kernel <name>` (run in <owner>/specadapt-<name> so parallel jobs do not collide).
-   Record the git SHA in the submission record.
-3. A bundled `heartbeat(phase, step, total, **metrics)` that prints one line to the real kernel
-   stdout, bypassing capture_output, so I can watch on the Kaggle page.
-4. Files a script writes under artifacts/ stay as kernel output files (not embedded in the result
-   JSON, not deleted). `--resume` downloads them to results/runs/<timestamp>/ and prints only the
-   job's summary.json, plus the last 20 log lines if it failed.
-
-Done when: one CPU kernel probe (2 minutes of heartbeats, a 1 MB artifact) shows heartbeats live on
-the Kaggle page and the artifact comes back with a matching sha256. Tell me exactly where to look.
+1. Tier order from the job TOML: `tier_order = ["T2", "T1"]`. Default when the key is absent: the
+   current order. A one-element list runs that tier only. Set T2 first in p2-smoke, p2, p1 and p4.
+2. After each tier's validation replay, one heartbeat line that carries the whole result:
+   phase=result tier=<T> acceptance=<..> b1=<..> gain_pp=<..> plus acceptance per task. It must be
+   readable on the live log before the job ends.
+3. A short-path job TOML training/jobs/p2-lora.toml: tier_order = ["T2"], one learning rate (3e-4),
+   checkpoints [2, 4], max_minutes = 60. Everything else as p2.toml.
+4. CPU tests for 1 to 3 on the tiny models already used in the suite. Run the CPU suite. Commit
+   everything in the tree, training_notes/ included, so both runs cite a clean Git SHA.
+5. Submit both detached, each in its own kernel with the training-inputs dataset attached:
+   p2-smoke (kernel `p2-smoke`) and p2 (kernel `p2`). If Kaggle refuses the second GPU session,
+   submit only the smoke and print the p2 command for me.
+6. Print, ready to copy: both run cards, the watch and collect commands for each, and the launch
+   commands for p2-lora, p1 and p4 with expected minutes.
+End the session. Do not wait for either job.
 ```
 
-**Next:** works → 3. Heartbeats not visible live → 3 anyway, and you watch kernel status instead. Artifact does not come back → stay in 1; trained weights depend on it.
+**Next** (you; watch both with `uv run python -m demo.kaggle_watch <ts>`)
 
-## 2 · Data and trainer · SOL
-
-```text
-Iteration 2. Read training_notes/iteration.md "Rules for every worker" and block 2, then
-training.md section 6 (rows "Training text", T1, T2) and src/specadapt/decoding.py.
-Do not edit src/demo/kaggle_run.py or kaggle_runtime.py; another session owns them.
-
-Goal: one Kaggle job that takes a pair and returns "did training raise acceptance on validation".
-
-1. training/build_training_inputs.py: for qwen_7b and vicuna_7b, join training/dataset/train/
-   {fit/base,val}.jsonl to the oracle rows in results/modal/20261123T154925641802Z/oracle-dump/
-   <target>/train/ by prompt_id. Check the prompt hash per row and exact coverage (1,440 and 320).
-   Keep prompt_id, task, prompt, teacher text, target token_ids, stop_reason. Upload as one private
-   Kaggle dataset `specadapt-train-inputs` (approved). No test rows.
-2. src/specadapt/alignment.py:
-   - T1 OutputLogitAdapter: logit bias + low-rank lm_head delta, rank 8 or 16.
-   - T2 LoRAAdapter: rank 16 on q,k,v,o,gate,up,down, merge_and_unload().
-   - Trainer: text = draft_prompt(prompt) + teacher text, + draft EOS only when stop_reason is "eos",
-     tokenized with the draft tokenizer, loss on answer tokens only. Only the drafter trains.
-   - Merged and unmerged logits differ by less than 1e-3.
-3. training/kaggle/train_pair.py, configured by training/jobs/<job>.toml (the runner bundles only
-   .py and .toml and passes no arguments). For one pair:
-   a. preflight (inputs present, one training step per tier, merge check);
-   b. B1: fixed K=3 replay of the base drafter on validation through generate(oracle=...), the way
-      modal/stage1_smoke.py kaggle_replay does it (same_tokenizer for P1);
-   c. train at most 6 configurations per tier. Suggested: T1 rank {8,16} x lr {1e-3,3e-3,1e-2};
-      T2 lr {1e-4,3e-4,1e-3} checked at 2 and 4 epochs. Rank them by teacher-forced top-1 agreement
-      on validation answer tokens, which takes seconds;
-   d. merge the winner of each tier and run the same fixed K=3 replay on all 320 validation prompts;
-   e. save the two winners' unmerged weights under artifacts/.
-   summary.json: verdict, per tier {config, top-1 agreement, acceptance overall and per task},
-   B1 acceptance, t1_gain_pp, t2_gain_pp (tier minus B1, percentage points), minutes per phase,
-   seconds per replayed prompt, and the actual GPU config (see "GPU config" in iteration.md; its
-   training defaults and max_minutes go in the job TOML).
-4. A smoke mode in the TOML: 64 fit prompts, one configuration per tier, and the first 10 validation
-   prompts per task in file order. On those 40 prompts P2's B1 must give exactly accepted=2610,
-   proposed=13938 (the recorded run). Abort otherwise.
-5. Job TOMLs for p2-smoke, p2, p1, p4, all with the same grid.
-
-CPU tests on tiny random models: merge equivalence for both adapters, label masking, EOS for both
-stop reasons, the join rejecting a wrong hash and a missing row. Do not submit any GPU job.
-```
-
-**Next:** 3.
-
-## 3 · Smoke, then P2 · OPUS
-
-```text
-Iteration 3. Read training_notes/iteration.md "Rules for every worker" and block 3. Iterations 1 and
-2 are committed; check the Log in progress.md.
-
-1. Wire training/kaggle/train_pair.py to heartbeat() and artifacts/ from iteration 1: a heartbeat in
-   the training loop and the replay loop with loss or running acceptance and an ETA.
-2. Run the CPU suite. Submit p2-smoke detached in kernel `p2-smoke` with the training-inputs dataset
-   attached. It should finish in under 15 minutes.
-3. Print, ready to copy: the collect command for the smoke, and one launch command each for p2, p1
-   and p4 (detached, own kernel, dataset attached) with expected minutes.
-End the session.
-```
-
-**Next** (you, after collecting the smoke)
-
-| Smoke | Do |
+| What you see | Do |
 | --- | --- |
-| `verdict = pass` | Run the printed `p2` command yourself. No agent needed. |
-| Fail | Prompt 3.b below, OPUS. |
+| Smoke `verdict = pass` | Nothing. P2 is already running. Go to 4 when it ends. |
+| Smoke fails, or P2 aborts in preflight | Prompt 3.b, OPUS. |
+| P2 fails after the smoke passed | Prompt 3.b with the P2 timestamp. |
 
 ```text
-Iteration 3.b. The p2-smoke run failed: results/runs/<timestamp>/. Find the cause, reproduce it in a
-CPU test, fix, rerun the CPU suite, resubmit p2-smoke detached, print the commands again. If it is a
-second failure for the same reason, stop and write what you know.
+Iteration 3.b. A run failed: results/runs/<timestamp>/ after collecting it (summary and the printed
+log tail only). Find the cause, reproduce it in a CPU test, fix, rerun the CPU suite, commit.
+Resubmit detached in fresh kernels (`p2-smoke-r2`, `p2-r2`) so a still-running version is not
+disturbed: the smoke again, and with it either the full p2 or, when I say the short path is needed,
+p2-lora. Print the run cards and commands again. If this is a second failure for the same reason,
+stop and write what you know.
 ```
 
-## 4 · Read P2, branch · you
+`p2-lora` is the short path: about 35–40 minutes from firing to a B1-versus-T2 table and saved LoRA weights. Use it when the full run cannot finish in the time available. The full `p2` run can follow afterwards to add the learning-rate sweep and T1.
 
-Collect the `p2` run and read `summary.json`.
+## 4 · Collect P2 and branch · you
+
+```powershell
+uv run python -m demo.kaggle_run --resume <p2 timestamp>
+```
+
+The numbers are in `results/runs/<p2 timestamp>/summary.json` (acceptance per tier, overall and per task, gains over B1, the sweep) and the weights are in `artifacts/`. If the run is still training T1 when the T2 numbers are needed, they are on the live log in the `phase=result tier=T2` line.
 
 | P2 result | Do |
 | --- | --- |
-| `t2_gain_pp ≥ 2` | Run the printed `p1` and `p4` commands. P4 first, it is the slow one. Start 5 if there is time. |
-| `t2_gain_pp < 2`, or T1 and T2 both below B1 | Prompt 4.b, OPUS. Do not spend GPU on P1 and P4 yet. |
-| Job failed | Prompt 3.b with the `p2` timestamp. |
+| `t2_gain_pp ≥ 2` | The recipe works. Later session: 6, then 5. |
+| `t2_gain_pp < 2`, or T2 below B1 | It is still a result. Then prompt 4.b, OPUS, before spending GPU on P1 and P4. |
 
 ```text
 Iteration 4.b. P2 training barely moved acceptance: results/runs/<timestamp>/ (summary only). Check in
@@ -182,14 +141,22 @@ this order, each with a CPU test or a 15-minute smoke-sized job, not a full run:
 3. Label mask and EOS handling.
 4. Teacher-forced top-1 agreement rose but replay acceptance did not: then it is the bridge. Measure
    acceptance when the proposal is the teacher text itself re-tokenized by the drafter.
-5. Learning rate too low or too high: look at the loss curves in the heartbeats.
+5. Learning rate too low or too high: look at the loss values in the heartbeat lines.
 Report the cause and the fix, resubmit p2 detached once. If none of the five explains it, stop and
 write up what you ruled out; that goes to Fable.
 ```
 
-## 5 · K policies on P2 · SOL · stretch
+---
 
-Write it while P2 trains. Fire it only after P2 has winners.
+## Later session
+
+### 6 · P1 and P4 · you
+
+Run the `p4` and `p1` launch commands printed in iteration 3, P4 first because it is the slow one. Each uses the same trainer and grid as P2, T2 first. Collect each exactly as in 4. If Kaggle refuses a second GPU session, run them one after the other.
+
+### 5 · K policies on P2 · SOL
+
+Fire it only after P2 has winners.
 
 ```text
 Iteration 5. Read training_notes/iteration.md "Rules for every worker" and block 5, then
@@ -215,14 +182,14 @@ CPU tests with stub models for both policies. Submit detached when the p2 artifa
 commit and print the launch command for me.
 ```
 
-**Next:** numbers go into the Log. Applying the policies to P1 and P4 is tomorrow.
+**Next:** numbers go into the Log. Applying the policies to P1 and P4 follows.
 
 ---
 
-## Not today
+## Not in this plan
 
 - Checkpoint freeze and the 400-prompt test replay.
 - Learning curve, leave-one-task-out, cache ablations.
 - Anything on Modal. One warning for when stage 5 comes up: in the stage 1 smoke, live B1 matched B0 on only 34/40 (P2), 36/40 (P4), 39/40 (P1) prompts, and the stage 5 gate asks for 99%. Probe that before paying for the sweep.
 - P3 and P5: their target is not recorded.
-- The write-up. It is its own track and no iteration here produces it.
+- Reports, figures and the write-up. Writing is its own track; iterations here are for code and experiments only.

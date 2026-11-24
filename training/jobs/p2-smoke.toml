@@ -1,4 +1,5 @@
 pair = "P2"
+tier_order = ["T2", "T1"]
 smoke = true
 smoke_fit_prompts = 64
 smoke_val_per_task = 10

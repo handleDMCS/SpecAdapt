@@ -1,4 +1,5 @@
 pair = "P2"
+tier_order = ["T2", "T1"]
 smoke = false
 max_minutes = 120
 preflight_minutes = 5

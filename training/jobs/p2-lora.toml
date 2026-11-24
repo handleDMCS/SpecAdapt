@@ -1,0 +1,24 @@
+# Short path: B1 and T2 only, one learning rate.
+pair = "P2"
+tier_order = ["T2"]
+smoke = false
+max_minutes = 60
+preflight_minutes = 5
+seed = 42
+training_precision = "float32"
+replay_precision = "float16"
+optimizer = "adamw"
+weight_decay = 0.0
+warmup_fraction = 0.05
+batch_sequences = 16
+batch_tokens = 16000
+
+[t1]
+ranks = [8, 16]
+learning_rates = [0.001, 0.003, 0.01]
+epochs = 2
+
+[t2]
+rank = 16
+learning_rates = [0.0003]
+checkpoints = [2, 4]

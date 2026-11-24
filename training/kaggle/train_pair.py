@@ -25,6 +25,8 @@ from specadapt.training_inputs import (
 PAIRS = {"P1": ("llama_68m", "vicuna_7b"), "P2": ("llama_68m", "qwen_7b"),
          "P4": ("llama_160m", "qwen_7b")}
 K = 3
+# Default tier order when the job TOML has no tier_order.
+TIERS = ("T1", "T2")
 MERGE_TOLERANCE = 1e-3
 SMOKE_COUNTS = (2610, 13938)
 
@@ -77,6 +79,13 @@ class Progress:
             if starts or (total is not None and step == total) or monotonic() - self.last >= 30:
                 self._emit()
 
+    def once(self, phase, **metrics):
+        """One line that the keepalive does not repeat, such as a tier's result."""
+        with self.lock:
+            line = runtime.heartbeat(phase, **metrics)
+            self.last = monotonic()
+            return line
+
     def __enter__(self):
         self.worker.start()
         return self
@@ -116,18 +125,33 @@ def timed(summary, phase):
         write_json(Path("summary.json"), summary)
 
 
-def grid(job):
-    t1, t2 = job["t1"], job["t2"]
-    t1_configs = [dict(rank=rank, lr=lr, epochs=t1["epochs"])
-                  for rank in t1["ranks"] for lr in t1["learning_rates"]]
-    t2_configs = [dict(rank=t2["rank"], lr=lr, epochs=max(t2["checkpoints"]))
-                  for lr in t2["learning_rates"]]
-    if not 1 <= len(t1_configs) <= 6 or not 1 <= len(t2_configs) * len(t2["checkpoints"]) <= 6:
+def tier_order(job):
+    order = list(job.get("tier_order", TIERS))
+    if not order or len(set(order)) != len(order) or not set(order) <= set(TIERS):
+        raise ValueError(f"tier_order must list distinct tiers from {TIERS}, got {order}.")
+    return order
+
+
+def tier_grid(job, tier):
+    if tier == "T1":
+        t1 = job["t1"]
+        configs = [dict(rank=rank, lr=lr, epochs=t1["epochs"])
+                   for rank in t1["ranks"] for lr in t1["learning_rates"]]
+        checkpoints = [t1["epochs"]]
+    else:
+        t2 = job["t2"]
+        configs = [dict(rank=t2["rank"], lr=lr, epochs=max(t2["checkpoints"])) for lr in t2["learning_rates"]]
+        checkpoints = t2["checkpoints"]
+    if not 1 <= len(configs) * len(checkpoints) <= 6:
         raise ValueError("Each tier needs between one and six configurations.")
     if job["smoke"]:
-        return {"T1": (t1_configs[:1], [t1["epochs"]]),
-                "T2": ([dict(t2_configs[0], epochs=min(t2["checkpoints"]))], [min(t2["checkpoints"])])}
-    return {"T1": (t1_configs, [t1["epochs"]]), "T2": (t2_configs, t2["checkpoints"])}
+        return [dict(configs[0], epochs=min(checkpoints))], [min(checkpoints)]
+    return configs, checkpoints
+
+
+def grid(job):
+    """Configurations per tier, in the job's tier_order."""
+    return {tier: tier_grid(job, tier) for tier in tier_order(job)}
 
 
 def select_rows(job, fit, validation):
@@ -300,6 +324,24 @@ def replay(model, draft_tokenizer, target_tokenizer, validation, job, tier, summ
         runtime.abort(f"P2 smoke B1 counted {tuple(counts)}, expected {SMOKE_COUNTS} (accepted, proposed).")
 
 
+def result_metrics(summary, tier):
+    """The phase=result heartbeat for one tier: overall, B1, gain and acceptance per task."""
+    data, base = summary["tiers"][tier], summary["tiers"]["B1"]
+    return dict(tier=tier, acceptance=data["acceptance"], b1=base["acceptance"],
+                gain_pp=summary[f"{tier.lower()}_gain_pp"],
+                **{task: data["per_task"][task]["acceptance"] for task in TASKS})
+
+
+def run_tiers(job, summary, progress, train_and_replay):
+    for tier, (configs, checkpoints) in grid(job).items():
+        train_and_replay(tier, configs, checkpoints)
+        summary[f"{tier.lower()}_gain_pp"] = 100 * (
+            summary["tiers"][tier]["acceptance"] - summary["tiers"]["B1"]["acceptance"])
+        write_json(Path("summary.json"), summary)
+        write_json(Path("artifacts/validation.json"), summary)
+        progress.once("result", **result_metrics(summary, tier))
+
+
 def fit_tier(tier, configs, checkpoints, load_draft, tokenizer, fit, val, job, summary, progress):
     import torch
     from safetensors.torch import load_file, save_file
@@ -363,17 +405,16 @@ def run(job, summary, progress):
         del model
         torch.cuda.empty_cache()
     write_json(Path("artifacts/validation.json"), summary)
-    for tier, (configs, checkpoints) in grid(job).items():
+
+    def train_and_replay(tier, configs, checkpoints):
         with timed(summary, f"{tier}_train"):
             model = fit_tier(tier, configs, checkpoints, load_draft, draft, fit, val, job, summary, progress)
         with timed(summary, f"{tier}_replay"):
             replay(model, draft, target, validation, job, tier, summary, progress)
             del model
             torch.cuda.empty_cache()
-        summary[f"{tier.lower()}_gain_pp"] = 100 * (
-            summary["tiers"][tier]["acceptance"] - summary["tiers"]["B1"]["acceptance"])
-        write_json(Path("summary.json"), summary)
-        write_json(Path("artifacts/validation.json"), summary)
+
+    run_tiers(job, summary, progress, train_and_replay)
     summary["seconds_per_replayed_prompt"] = {tier: data["seconds_per_replayed_prompt"]
                                                for tier, data in summary["tiers"].items()}
 
@@ -383,7 +424,8 @@ def main():
     if not 0 < job["preflight_minutes"] <= min(5, job["max_minutes"]):
         raise ValueError("Set a positive preflight budget of at most five minutes.")
     summary = dict(verdict="running", pair=job["pair"], mode="smoke" if job["smoke"] else "full",
-                   validation_split="train/val", k=K, max_new_tokens=MAX_NEW_TOKENS, replay_batch=1,
+                   validation_split="train/val", tier_order=tier_order(job), k=K,
+                   max_new_tokens=MAX_NEW_TOKENS, replay_batch=1,
                    provenance=submission_provenance(), gpu_config=job.copy(),
                    tiers={}, trials={}, minutes_per_phase={})
     Path("artifacts").mkdir(exist_ok=True)
