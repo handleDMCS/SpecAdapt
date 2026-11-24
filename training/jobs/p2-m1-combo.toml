@@ -1,0 +1,10 @@
+# Does trained T2 combine with M1? Four replay arms on 80 P2 validation prompts, no training.
+# Weights: run 20261124T052050221490Z, attached with --kernel-source dungg1810/specadapt-p2.
+pair = "P2"
+k = 3
+prompts_per_task = 20
+t2_sha256 = "fe8bf05e3b77ff9460e9ff61f73bef4d28c1992cf0d9a2d773510d360506bcfb"
+# Draft-to-target step cost ratio measured in stage 1 for P2 (iteration.md block 5).
+cost_ratio = 0.0623
+max_minutes = 45
+preflight_minutes = 5

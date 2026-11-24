@@ -295,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Stage and validate; do not contact Kaggle")
     parser.add_argument("--no-cache", action="store_true", help="Skip automatic attachment of experiment caches")
     parser.add_argument("--dataset", action="append", default=[], help="Additional owner/dataset-slug input (repeatable)")
+    parser.add_argument("--kernel-source", action="append", default=[],
+                        help="Attach another notebook's output files as input, owner/kernel-slug (repeatable)")
     parser.add_argument("--kernel", help="Run in kernel <owner>/specadapt-<name> instead of the metadata id")
     parser.add_argument("--detach", action="store_true", help="Push, print the run card and exit without waiting")
     parser.add_argument("--expected-minutes", type=positive_number, help="Shown on the run card")
@@ -331,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
             api = None if args.dry_run else get_api()
             caches = [] if args.no_cache or api is None else ready_cache_sources(api, PROJECT_ROOT, owner)
             metadata["dataset_sources"] = list(dict.fromkeys([*metadata.get("dataset_sources", []), *caches, *args.dataset]))
+            if args.kernel_source:
+                metadata["kernel_sources"] = list(dict.fromkeys([*metadata.get("kernel_sources", []),
+                                                                 *args.kernel_source]))
             stage = PROJECT_ROOT / "build/submissions" / timestamp
             stage.mkdir(parents=True)
             (stage / "submission.py").write_text(source, encoding="utf-8")

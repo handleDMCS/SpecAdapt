@@ -240,6 +240,11 @@ def score_check(tier, index, epoch, beats, pair, smoke, history):
 
 
 def result_check(beat, smoke):
+    if "tier" not in beat.fields or "gain_pp" not in beat.fields:
+        # Other jobs (replay-only arms) report their own fields; show them as recorded.
+        label = beat.fields.get("arm", "result")
+        values = ", ".join(f"{key} {value}" for key, value in beat.fields.items() if key != "arm")
+        return Check(GREEN, f"{label} result", values or "recorded")
     tier = beat.fields.get("tier", "?")
     gain = number(beat.fields.get("gain_pp"))
     acceptance, b1 = number(beat.fields.get("acceptance")), number(beat.fields.get("b1"))
@@ -264,7 +269,8 @@ def evaluate(beats, job, status=None, now=None, errors=()):
     grouped = {}
     for beat in beats:
         # Each tier's result line sits where the run reached it, not with the first result.
-        key = f"result:{beat.fields.get('tier')}" if beat.phase == "result" else beat.phase
+        label = beat.fields.get("tier") or beat.fields.get("arm")
+        key = f"result:{label}" if beat.phase == "result" else beat.phase
         grouped.setdefault(key, []).append(beat)
     history = {}
     for phase, group in grouped.items():
@@ -277,8 +283,11 @@ def evaluate(beats, job, status=None, now=None, errors=()):
             checks.append(Check(NEUTRAL, "out of memory", f"{phase}: batch halved to "
                                 f"{last.get('max_sequences')} sequences / {last.get('max_tokens')} tokens. "
                                 "A second OOM aborts."))
-        elif match := re.fullmatch(r"(B1|T\d)-replay", phase):
-            checks.append(replay_check(match[1], group, pair, grouped.get("B1-replay", ())))
+        elif match := re.fullmatch(r"(B1|T\d)(?:-baseline|-m1)?-replay", phase):
+            # Under m1 the drafter is the same but the yardstick is not: label it apart from baseline B1.
+            label = f"{match[1]} m1" if phase.endswith("-m1-replay") else match[1]
+            baseline = grouped.get("B1-replay") or grouped.get("B1-baseline-replay") or ()
+            checks.append(replay_check(label, group, pair, baseline))
         elif match := re.fullmatch(r"(T\d)-fit-(\d+)", phase):
             checks.append(fit_check(match[1], int(match[2]), group, job))
         elif match := re.fullmatch(r"(T\d)-score-(\d+)-epoch-(\d+)", phase):

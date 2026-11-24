@@ -140,6 +140,16 @@ class FlagTests(unittest.TestCase):
         checks, _ = evaluate([], job("p2"), status="queued")
         self.assertEqual((verdict(checks), checks[0].pending), (NEUTRAL, True))
 
+    def test_replay_only_arms_are_named_apart_and_never_crash(self):
+        lines = [beat("06:00:00", "phase=B1-baseline-replay step=80/80 acceptance=0.19"),
+                 beat("06:00:01", "phase=result arm=B1-baseline acceptance=0.19 tokens_per_round=1.5 cost=0.7"),
+                 beat("06:02:00", "phase=B1-m1-replay step=80/80 acceptance=0.30"),
+                 beat("06:02:01", "phase=result arm=B1-m1 acceptance=0.30 tokens_per_round=1.8 cost=0.6")]
+        checks, _ = evaluate(parse_beats(lines), {"pair": "P2", "max_minutes": 45})
+        self.assertEqual(flags(checks)["B1 replay"], GREEN)
+        self.assertEqual(flags(checks)["B1 m1 replay"], GREEN, "M1 is not judged against baseline B1.")
+        self.assertEqual(flags(checks)["B1-m1 result"], GREEN)
+
 
 @unittest.skipIf(matplotlib is None, "matplotlib is required for --visual")
 class FigureTests(unittest.TestCase):

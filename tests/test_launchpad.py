@@ -219,12 +219,13 @@ class SubmitTests(unittest.TestCase):
                   patch.object(kaggle_run, "wait_for_run") as wait,
                   redirect_stdout(stream)):
                 code = kaggle_run.main(["job.py", "--no-cache", "--detach", "--kernel", "probe",
-                                        "--expected-minutes", "3"])
+                                        "--expected-minutes", "3", "--kernel-source", "owner/specadapt-p2"])
             self.assertEqual(code, 0)
             wait.assert_not_called()
             stage = Path(pushed[0])
             metadata = json.loads((stage / "kernel-metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["id"], "owner/specadapt-probe")
+            self.assertEqual(metadata["kernel_sources"], ["owner/specadapt-p2"])
             submission = json.loads((stage / "submission.json").read_text(encoding="utf-8"))
             self.assertIn("git_sha", submission)
             text = stream.getvalue()
