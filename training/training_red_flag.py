@@ -283,6 +283,17 @@ def evaluate(beats, job, status=None, now=None, errors=()):
             checks.append(fit_check(match[1], int(match[2]), group, job))
         elif match := re.fullmatch(r"(T\d)-score-(\d+)-epoch-(\d+)", phase):
             checks.append(score_check(match[1], int(match[2]), int(match[3]), group, pair, smoke, history))
+    # A finished fit's loss readings are single batches; its validation score is the better judge.
+    for check in checks:
+        match = re.fullmatch(r"(T\d) fit (\d+)", check.name)
+        if not match or check.flag != NEUTRAL or check.pending or "finished" not in check.detail:
+            continue
+        scores = [other for other in checks if other.name.startswith(f"{match[1]} score {match[2]} ")
+                  and not other.pending]
+        if scores and all(other.flag == GREEN for other in scores):
+            check.flag = GREEN
+            check.detail = check.detail.replace(". Flat so far; single-batch readings are noisy.",
+                                                ". Readings are noisy single batches; its score line is green.")
     if errors and not grouped.get("abort"):
         checks.append(Check(RED, "error", errors[0][:200]))
     running = status == "running" or (status is None and now is not None)
@@ -316,7 +327,10 @@ def evaluate(beats, job, status=None, now=None, errors=()):
             checks.append(Check(NEUTRAL, "time", detail + ". Most of the budget is gone."))
         else:
             checks.append(Check(GREEN, "time", detail))
-    if status == "complete":
+    if status in FINAL and not beats:
+        checks.append(Check(NEUTRAL, "log", "the job has ended and its live log is gone. Collect it with "
+                                            "`uv run python -m demo.kaggle_run --resume <timestamp>`, then run this again."))
+    elif status == "complete":
         reported = {key.removeprefix("result:") for key in grouped if key.startswith("result:")}
         missing = [tier for tier in job.get("tier_order", ["T1", "T2"]) if tier not in reported]
         if missing:

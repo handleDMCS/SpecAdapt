@@ -92,6 +92,15 @@ class FlagTests(unittest.TestCase):
             checks, _ = evaluate(parse_beats(lines), job("p2"))
             self.assertEqual(flags(checks)["T2 fit 1"], expected, end)
 
+    def test_finished_fit_with_flat_loss_defers_to_a_green_score(self):
+        lines = [beat("06:10:00", "phase=T1-fit-4 step=90/182 loss=2.545"),
+                 beat("06:10:30", "phase=T1-fit-4 step=182/182 loss=2.750"),
+                 beat("06:10:40", "phase=T1-score-4-epoch-2 step=320/320 top1_agreement=0.4546")]
+        checks, _ = evaluate(parse_beats(lines), job("p2"))
+        self.assertEqual(flags(checks)["T1 fit 4"], GREEN)
+        unscored = evaluate(parse_beats(lines[:2]), job("p2"))[0]
+        self.assertEqual(flags(unscored)["T1 fit 4"], NEUTRAL)
+
     def test_top1_dropping_between_checkpoints_is_neutral(self):
         lines = [beat("05:50:31", "phase=T2-score-3-epoch-2 step=320/320 top1_agreement=0.60"),
                  beat("05:51:00", "phase=T2-score-3-epoch-4 step=320/320 top1_agreement=0.58")]
@@ -125,6 +134,9 @@ class FlagTests(unittest.TestCase):
         self.assertEqual(flags(checks)["time"], RED)
         checks, _ = evaluate(parse_beats([result("T2", 0.25, "6.4")]), job("p2"), status="complete")
         self.assertEqual(flags(checks)["results"], RED, "The full run also owes a T1 result.")
+        checks, _ = evaluate([], job("p2"), status="complete")
+        self.assertEqual((verdict(checks), flags(checks)["log"]), (NEUTRAL, NEUTRAL),
+                         "A finished job whose live log is gone needs collecting, not a red flag.")
         checks, _ = evaluate([], job("p2"), status="queued")
         self.assertEqual((verdict(checks), checks[0].pending), (NEUTRAL, True))
 
