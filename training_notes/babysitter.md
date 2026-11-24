@@ -6,7 +6,7 @@ Iteration 3, Tue 24 Nov 2026. Times are local (UTC+7); heartbeat clocks are UTC,
 - Full P2: fired 12:20, `20261124T052050221490Z`, kernel `specadapt-p2` (step 1 done; do not fire it again)
 - Code: `7004468`, Kaggle CPU suite 72/72
 
-**Quick check, any time:** `uv run python -m demo.training_red_flag <timestamp>` prints one line per check (`green-flag`, `neutral`, `red-flag`) and an overall verdict. It reads the live Kaggle log while the job runs and the collected result afterwards. `neutral (wait)` means too early to judge and does not count toward the verdict. On `red-flag`, use the failure table below. The expectations it checks against are in `EXPECT` at the top of `src/demo/training_red_flag.py`.
+**Quick check, any time:** `uv run python -m training.training_red_flag <timestamp>` (add `--visual` for a chart) prints one line per check (`green-flag`, `neutral`, `red-flag`) and an overall verdict. It reads the live Kaggle log while the job runs and the collected result afterwards. `neutral (wait)` means too early to judge and does not count toward the verdict. On `red-flag`, use the failure table below. The expectations it checks against are in `EXPECT` at the top of `training/training_red_flag.py`.
 
 ## Timeline
 

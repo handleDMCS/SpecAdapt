@@ -1,12 +1,15 @@
 """Is a Kaggle training run going as expected right now? One flag per check, then a verdict.
 
-    uv run python -m demo.training_red_flag <timestamp>
-    uv run python -m demo.training_red_flag <timestamp> --log saved.log
+    uv run python -m training.training_red_flag <timestamp>
+    uv run python -m training.training_red_flag <timestamp> --visual
+    uv run python -m training.training_red_flag <timestamp> --log saved.log
 
 Reads the run's heartbeat lines: from the collected result (results/submission-<ts>.json) once the
 run has been collected, otherwise from a snapshot of the live Kaggle log. Each check prints
 green-flag (as expected), neutral (too early to tell, or mildly off) or red-flag (act now).
 Read-only: it never changes or cancels the run. Run it as often as you like.
+--visual also draws the run (loss, top-1 agreement, replay, results, flags) to
+build/red-flag/<timestamp>.png and opens it.
 
 Exit code: 0 green-flag, 3 neutral, 2 red-flag, 1 the check itself could not run.
 
@@ -17,13 +20,14 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import time
 import tomllib
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASKS = ("math", "code", "instruction", "summarization")
 FINAL = {"complete", "error", "cancelled", "canceled", "platform_error"}
 
@@ -398,6 +402,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("timestamp", help="The timestamp printed on the run card")
     parser.add_argument("--log", help="Judge a saved log file instead of fetching the run's log")
+    parser.add_argument("--visual", action="store_true", help="Also draw the run to a PNG and open it")
+    parser.add_argument("--no-open", action="store_true", help="With --visual, write the PNG without opening it")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"\d{8}T\d{12}Z", args.timestamp):
         parser.error("Expected the UTC timestamp from the run card.")
@@ -415,6 +421,16 @@ def main(argv=None):
     title = f"{args.timestamp} | {job.get('pair', '?')} {mode} | {kernel} | from the {source}"
     text, code = report(title, now_line, checks)
     print(text)
+    if args.visual:
+        from training.red_flag_figure import draw
+
+        summary_path = PROJECT_ROOT / "results/runs" / args.timestamp / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else None
+        path = PROJECT_ROOT / "build/red-flag" / f"{args.timestamp}.png"
+        draw(path, title, now_line, checks, verdict(checks), beats, job, summary)
+        print(f"Figure: {path}")
+        if not args.no_open and hasattr(os, "startfile"):
+            os.startfile(path)
     return code
 
 

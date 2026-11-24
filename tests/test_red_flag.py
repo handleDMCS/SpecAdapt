@@ -2,10 +2,16 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 import tomllib
 import unittest
 
-from demo.training_red_flag import GREEN, NEUTRAL, RED, evaluate, parse_beats, report, verdict
+try:
+    import matplotlib
+except ImportError:
+    matplotlib = None
+
+from training.training_red_flag import GREEN, NEUTRAL, RED, evaluate, parse_beats, report, verdict
 
 JOBS = Path(__file__).resolve().parents[1] / "training/jobs"
 
@@ -121,6 +127,23 @@ class FlagTests(unittest.TestCase):
         self.assertEqual(flags(checks)["results"], RED, "The full run also owes a T1 result.")
         checks, _ = evaluate([], job("p2"), status="queued")
         self.assertEqual((verdict(checks), checks[0].pending), (NEUTRAL, True))
+
+
+@unittest.skipIf(matplotlib is None, "matplotlib is required for --visual")
+class FigureTests(unittest.TestCase):
+    def test_visual_draws_every_panel_from_heartbeats(self):
+        from training.red_flag_figure import draw
+
+        lines = HEALTHY + [beat("05:55:00", "phase=T2-replay step=60/320 acceptance=0.4043"),
+                           result("T2", 0.3146, "12.83")]
+        beats = parse_beats(lines)
+        checks, now_line = evaluate(beats, job("p2"))
+        with tempfile.TemporaryDirectory() as folder:
+            path = draw(Path(folder) / "run.png", "title", now_line, checks, verdict(checks), beats, job("p2"))
+            self.assertGreater(path.stat().st_size, 20000)
+            self.assertEqual(path.read_bytes()[:8], b"PNG
+
+")
 
 
 if __name__ == "__main__":
