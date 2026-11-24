@@ -1,0 +1,22 @@
+pair = "P2"
+smoke = false
+max_minutes = 120
+preflight_minutes = 5
+seed = 42
+training_precision = "float32"
+replay_precision = "float16"
+optimizer = "adamw"
+weight_decay = 0.0
+warmup_fraction = 0.05
+batch_sequences = 16
+batch_tokens = 16000
+
+[t1]
+ranks = [8, 16]
+learning_rates = [0.001, 0.003, 0.01]
+epochs = 2
+
+[t2]
+rank = 16
+learning_rates = [0.0001, 0.0003, 0.001]
+checkpoints = [2, 4]

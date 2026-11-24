@@ -50,3 +50,9 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - Verified on Kaggle CPU: CPU suite 59/59 passed (`20261124T035728993070Z`). Probe `20261124T035729226906Z`: 12/12 heartbeats live, 1 MB artifact SHA-256 matched. Abort probe `20261124T035735874445Z`: NaN at step 3 aborted the job, `verdict: fail`, artifact still returned and verified. Watcher run `20261124T040051760583Z`: all heartbeats shown live, exit 0.
 - Local Windows runs of `tests/test_workflow.py` fail 4 runner tests both before and after this change (8.3 temp paths, CRLF writes). Kaggle Linux is the reference.
 - GPU-hours used: 0. Open: none for iteration 2.
+
+**Iteration 2 · data and trainer · 2026-11-24 · DONE**
+- Published [private training inputs](https://www.kaggle.com/datasets/dungg1810/specadapt-train-inputs). Qwen and Vicuna each have 1,440 fit and 320 validation rows. All five published files matched the verified local build byte for byte.
+- P2 smoke, P2, P1 and P4 bundle successfully. T1 fits for two epochs. T2 scores at epochs two and four on a four-epoch schedule, with a two-epoch schedule in smoke. Both tiers select by validation answer-token top-1 agreement and save the unmerged winners as safetensors.
+- Kaggle CPU suite passed 69/69 (`20261124T045042312564Z`). The pinned draft tokenizers fit every joined example in context, and both selected adapter checkpoints saved, reloaded and merged on tiny Llama models.
+- GPU-hours used 0. Iteration 3 starts with the P2 T4 smoke and its B1 gate of 2,610 accepted out of 13,938 proposed tokens.
