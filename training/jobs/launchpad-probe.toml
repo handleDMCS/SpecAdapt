@@ -1,0 +1,5 @@
+# Iteration 1 probe: two minutes of heartbeats and one 1 MB artifact. CPU only.
+steps = 12
+interval_seconds = 10
+artifact_bytes = 1048576
+max_minutes = 5

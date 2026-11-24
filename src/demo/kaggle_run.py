@@ -11,17 +11,21 @@ import math
 import os
 from pathlib import Path, PureWindowsPath
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import tokenize
+import tomllib
 from urllib.parse import urlparse
 import zipfile
 
-from demo.kaggle_runtime import write_result
+from demo.kaggle_runtime import ARTIFACTS_DIR, write_result
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__"}
+EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__", ARTIFACTS_DIR}
+KERNEL_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")
 
 
 def root_file(filename: str, root: Path = PROJECT_ROOT) -> Path:
@@ -42,6 +46,40 @@ def get_api():
     api = KaggleApi()
     api.authenticate()
     return api
+
+
+def git_state(root: Path) -> dict:
+    """The commit a submission was bundled from, and whether the tree differed from it."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True,
+                             check=True).stdout.strip()
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True,
+                                check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {"git_sha": None, "git_dirty": None}
+    return {"git_sha": sha, "git_dirty": bool(status.strip())}
+
+
+def job_file(root: Path, filename: str) -> str:
+    """Validate a job TOML locally, so a typo fails before any Kaggle time is spent."""
+    path = root_file(filename, root)
+    if path.suffix.lower() != ".toml":
+        raise ValueError(f"Expected a TOML job file: {filename}")
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+    minutes = config.get("max_minutes")
+    if minutes is not None and (isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0):
+        raise ValueError(f"max_minutes must be a positive number in {filename}")
+    return path.relative_to(root).as_posix()
+
+
+def name_kernel(metadata: dict, name: str) -> dict:
+    """Run in <owner>/specadapt-<name>, so parallel jobs never replace each other's version."""
+    if not KERNEL_NAME.fullmatch(name):
+        raise ValueError("--kernel takes lowercase letters, digits and hyphens, at most 40 characters.")
+    owner = metadata["id"].split("/")[0]
+    # Kaggle derives the slug from the title, so both must agree.
+    return {**metadata, "id": f"{owner}/specadapt-{name}", "title": f"specadapt-{name}"}
 
 
 def read_metadata(filename: str, cpu: bool = False) -> dict:
@@ -78,7 +116,8 @@ def ready_cache_sources(api, root: Path, owner: str) -> list[str]:
     return sources
 
 
-def build_submission(root: Path, scripts: list[str], timestamp: str, owner: str) -> tuple[str, dict]:
+def build_submission(root: Path, scripts: list[str], timestamp: str, owner: str,
+                     provenance: dict | None = None) -> tuple[str, dict]:
     normalized, hashes = [], {}
     for filename in scripts:
         path = root_file(filename, root)
@@ -90,7 +129,7 @@ def build_submission(root: Path, scripts: list[str], timestamp: str, owner: str)
         normalized.append(relative)
         hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     submission = {"timestamp": timestamp, "scripts": normalized,
-                  "script_sha256": hashes, "cache_owner": owner}
+                  "script_sha256": hashes, "cache_owner": owner, **(provenance or {})}
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for folder, dirs, filenames in os.walk(root):
@@ -170,6 +209,60 @@ def fetch_result(api, kernel: str, submission: dict, status: str, destination: P
     return result, write_result(result, report)
 
 
+def fetch_artifacts(api, kernel: str, report: dict, destination: Path) -> Path:
+    """Download the listed artifacts and keep them only if every size and SHA-256 matches."""
+    expected = report["artifacts"]
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="specadapt-artifacts-", dir=destination) as temporary:
+        api.kernels_output(kernel, temporary, file_pattern=rf"^{ARTIFACTS_DIR}/", force=True, quiet=True)
+        for name, info in expected.items():
+            path = Path(temporary) / name
+            if not path.is_file():
+                raise RuntimeError(f"Kaggle did not return the artifact {name}.")
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if path.stat().st_size != info["bytes"] or digest != info["sha256"]:
+                raise RuntimeError(f"Size or SHA-256 mismatch for the artifact {name}.")
+        for name in expected:
+            target = destination / name
+            if target.exists():
+                raise RuntimeError(f"Refusing to overwrite the existing artifact {target}.")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(Path(temporary) / name, target)
+    return destination / ARTIFACTS_DIR
+
+
+def print_report(report: dict, run_dir: Path) -> None:
+    """Print a job's summary.json if it wrote one; otherwise the whole run log, as before."""
+    summary = report.get("outputs", {}).get("summary.json")
+    if summary is None:
+        print(report["run_log"])
+        return
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
+                                          encoding="utf-8")
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if report["status"] != "complete":
+        print(f"\nStatus: {report['status']}: {report.get('error')}\nLast 20 log lines:")
+        print("\n".join(report["run_log"].splitlines()[-20:]))
+    print(f"\nRun folder: {run_dir}")
+
+
+def run_card(kernel: str, submission: dict, metadata: dict, expected_minutes: float | None) -> str:
+    gpu = metadata.get("machine_shape") if metadata.get("enable_gpu") in (True, "true") else "CPU"
+    dirty = " (dirty tree)" if submission.get("git_dirty") else ""
+    lines = [f"Timestamp:  {submission['timestamp']}",
+             f"Kernel:     https://www.kaggle.com/code/{kernel}",
+             f"Machine:    {gpu}",
+             f"Git:        {submission.get('git_sha')}{dirty}"]
+    if submission.get("job"):
+        lines.append(f"Job:        {submission['job']}")
+    if expected_minutes:
+        lines.append(f"Expected:   about {expected_minutes:g} minutes")
+    lines.append(f"Collect:    uv run python -m demo.kaggle_run --resume {submission['timestamp']}")
+    return "\n".join(lines)
+
+
 def positive_number(value: str) -> float:
     number = float(value)
     if number <= 0 or not math.isfinite(number):
@@ -202,11 +295,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Stage and validate; do not contact Kaggle")
     parser.add_argument("--no-cache", action="store_true", help="Skip automatic attachment of experiment caches")
     parser.add_argument("--dataset", action="append", default=[], help="Additional owner/dataset-slug input (repeatable)")
+    parser.add_argument("--kernel", help="Run in kernel <owner>/specadapt-<name> instead of the metadata id")
+    parser.add_argument("--detach", action="store_true", help="Push, print the run card and exit without waiting")
+    parser.add_argument("--expected-minutes", type=positive_number, help="Shown on the run card")
+    parser.add_argument("--job", help="Root-relative job TOML; scripts read it with demo.kaggle_runtime.job_config()")
     parser.add_argument("--poll-interval", type=positive_number, default=10)
     parser.add_argument("--wait-timeout", type=positive_number, default=50400, help="Maximum wait in seconds")
     args = parser.parse_args(argv)
     if bool(args.scripts) == bool(args.resume):
         parser.error("Supply scripts, or --resume TIMESTAMP, but not both.")
+    if args.resume and (args.detach or args.kernel or args.job):
+        parser.error("--detach, --kernel and --job apply to new submissions only.")
     try:
         if args.resume:
             if not re.fullmatch(r"\d{8}T\d{12}Z", args.resume):
@@ -218,9 +317,17 @@ def main(argv: list[str] | None = None) -> int:
             api = None if args.dry_run else get_api()
         else:
             metadata = read_metadata(args.metadata, args.cpu)
+            if args.kernel:
+                metadata = name_kernel(metadata, args.kernel)
             owner = metadata["id"].split("/")[0]
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            source, submission = build_submission(PROJECT_ROOT, args.scripts, timestamp, owner)
+            provenance = git_state(PROJECT_ROOT)
+            if args.job:
+                provenance["job"] = job_file(PROJECT_ROOT, args.job)
+            if provenance["git_dirty"]:
+                print("Warning: the working tree has uncommitted changes; results will cite a dirty tree.",
+                      file=sys.stderr)
+            source, submission = build_submission(PROJECT_ROOT, args.scripts, timestamp, owner, provenance)
             api = None if args.dry_run else get_api()
             caches = [] if args.no_cache or api is None else ready_cache_sources(api, PROJECT_ROOT, owner)
             metadata["dataset_sources"] = list(dict.fromkeys([*metadata.get("dataset_sources", []), *caches, *args.dataset]))
@@ -244,9 +351,16 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError(f"Kaggle rejected submission: {response.error or invalid}")
             kernel = kernel_ref(response.ref, kernel)
             print(f"Submitted {kernel}, version {response.version_number}", flush=True)
+            if args.detach:
+                print(run_card(kernel, submission, metadata, args.expected_minutes))
+                return 0
         status = wait_for_run(api, kernel, args.poll_interval, args.wait_timeout)
         result, report = fetch_result(api, kernel, submission, status, PROJECT_ROOT / "results")
-        print(report["run_log"])
+        run_dir = PROJECT_ROOT / "results/runs" / timestamp
+        if report.get("artifacts"):
+            folder = fetch_artifacts(api, kernel, report, run_dir)
+            print(f"Artifacts: {len(report['artifacts'])} files, SHA-256 verified, in {folder}")
+        print_report(report, run_dir)
         print(f"Result: {result}")
         return 0 if status == "complete" and report["status"] == "complete" else 1
     except (Exception, KeyboardInterrupt) as error:

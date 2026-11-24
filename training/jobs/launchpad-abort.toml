@@ -1,0 +1,7 @@
+# Iteration 1 probe, failure path: the loss turns NaN at step 3, so the job must abort itself
+# with verdict "fail" and still return the artifact written before the abort. CPU only.
+steps = 12
+interval_seconds = 10
+artifact_bytes = 1048576
+nan_at_step = 3
+max_minutes = 5
