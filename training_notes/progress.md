@@ -40,3 +40,13 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - **Stage 4 prerequisites.** Prepare the Kaggle training inputs and implement W8 (`adaptive_k.py`) and W9 (`alignment.py`). W4, the split test gate, and the W2 and W7 verification checks are still open. [Kaggle handoff](kaggle_training_handoff.md)
 - **Audit trail.** The live smoke reports record `8c3dea7`. The overnight budget and Kaggle validation result record `640c25f`. The overnight recorder checksum matches the current script. `modal/dump_oracles.py`, `modal/kaggle_oracle_smoke.py`, `modal/overnight_oracles.py`, and `kaggle_training_handoff.md` are still uncommitted.
 - **CPU tests.** Three Kaggle CPU runs on 2026-11-23 passed 45 tests each. A test run for the current working tree is pending. [Latest passing result](../results/submission-20261123T141758931693Z.json)
+
+## Log
+
+**Iteration 1 · launch pad · 2026-11-24 · DONE** (`9bd7e58` baseline commit of the Modal scripts and notes, then `f2ac2f0`, `c011e7b`)
+- `kaggle_run`: `--detach` (run card, exit 0), `--kernel <name>` → `<owner>/specadapt-<name>`, `--job training/jobs/<job>.toml` (validated locally, read in the job with `demo.kaggle_runtime.job_config()`), git SHA and dirty flag in every submission. `--resume <ts>` downloads `artifacts/` into `results/runs/<ts>/` with size and SHA-256 checks, and prints only `summary.json` (+ last 20 log lines on failure) when the job wrote one.
+- `kaggle_runtime`: `heartbeat(phase, step, total, **metrics)` reaches the live Kaggle log, and auto-aborts on a NaN or infinite float metric and on any heartbeat after the job's `max_minutes`. `abort(reason)` fails the job. Files under relative `artifacts/` stay as kernel output files, listed and not embedded. A failed job always gets `verdict: fail` in `summary.json`.
+- Watch from a terminal: `uv run python -m demo.kaggle_watch <ts>` (heartbeats, STALLED after 10 minutes of silence, end notice). It uses Kaggle's session-log stream through SDK internals, so a `kaggle` upgrade could break it; the kernel page is the fallback.
+- Verified on Kaggle CPU: CPU suite 59/59 passed (`20261124T035728993070Z`). Probe `20261124T035729226906Z`: 12/12 heartbeats live, 1 MB artifact SHA-256 matched. Abort probe `20261124T035735874445Z`: NaN at step 3 aborted the job, `verdict: fail`, artifact still returned and verified. Watcher run `20261124T040051760583Z`: all heartbeats shown live, exit 0.
+- Local Windows runs of `tests/test_workflow.py` fail 4 runner tests both before and after this change (8.3 temp paths, CRLF writes). Kaggle Linux is the reference.
+- GPU-hours used: 0. Open: none for iteration 2.
