@@ -146,21 +146,38 @@ def verify_huggingface():
         raise RuntimeError("Could not reach Hugging Face to verify the token.") from None
 
 
+def spend_amount(value, location):
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"Invalid USD amount in {location}.") from None
+    if not amount.is_finite() or amount < 0:
+        raise ValueError(f"Invalid USD amount in {location}.")
+    return amount
+
+
 def read_spend(path):
     total = Decimal(0)
-    try:
-        stream = path.open(encoding="utf-8")
-    except FileNotFoundError:
-        return total
-    with stream:
-        for number, line in enumerate(stream, 1):
-            try:
-                amount = Decimal(str(json.loads(line, parse_float=Decimal)["usd"]))
-            except (ValueError, KeyError, TypeError, InvalidOperation):
-                raise ValueError(f"Invalid USD amount in the spend ledger at line {number}.") from None
-            if not amount.is_finite() or amount < 0:
-                raise ValueError(f"Invalid USD amount in the spend ledger at line {number}.")
-            total += amount
+    if path.exists():
+        with path.open(encoding="utf-8") as stream:
+            for number, line in enumerate(stream, 1):
+                try:
+                    amount = json.loads(line, parse_float=Decimal)["usd"]
+                except (ValueError, KeyError, TypeError):
+                    raise ValueError(f"Invalid spend ledger entry at line {number}.") from None
+                total += spend_amount(amount, f"the spend ledger at line {number}")
+    for path in sorted(path.parent.glob("oracles/*/budget.json")):
+        run = json.loads(path.read_text(encoding="utf-8"))
+        total += spend_amount(run["startup_reserve_usd"], path)
+        for relative, reserved in run["job_reserves_usd"].items():
+            directory = path.parent / relative
+            costs = [spend_amount(json.loads(receipt.read_text(encoding="utf-8"))["usd"], receipt)
+                     for receipt in directory.glob("spend-*.json")]
+            spent = sum(costs, Decimal(0))
+            if (directory / "complete.json").is_file() and costs:
+                total += spent
+            else:
+                total += max(spent, spend_amount(reserved, path))
     return total
 
 

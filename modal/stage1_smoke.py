@@ -10,7 +10,7 @@ from time import monotonic
 import tomllib
 
 
-def kaggle_replay():
+def kaggle_replay(*, input_name="smoke_replay_input.toml", result_name="smoke_replay.json", validation=False):
     import torch
     from demo.benchmark import setup
 
@@ -18,19 +18,24 @@ def kaggle_replay():
     from huggingface_hub import snapshot_download
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from demo.oracle import digest, tokenizer_digest
+    from specadapt.bridge import decode
     from specadapt.decoding import generate, target_prompt
     from specadapt.oracle import GreedyOracle
 
     gpu = torch.cuda.get_device_name(0)
     if "T4" not in gpu:
         raise RuntimeError(f"Smoke replay requires a Kaggle T4, got {gpu}.")
-    with Path(__file__).with_name("smoke_replay_input.toml").open("rb") as stream:
+    with Path(__file__).with_name(input_name).open("rb") as stream:
         payload = json.loads(tomllib.load(stream)["payload"])
+    if validation and payload.get("split") != "train/val":
+        raise ValueError("The cloned oracle smoke run requires a validation-only payload.")
     plan = payload["plan"]
     models = {entry["key"]: entry for entry in plan["models"]}
     results = {}
     for report in payload["smoke"]:
         target = report["target"]
+        if validation and len({row["prompt_id"] for row in report["references"]}) != 40:
+            raise ValueError(f"Expected 40 distinct validation prompts for {target}.")
         config = models[target]
         files = [name for name in config["files"] if name == "config.json" or name.startswith("tokenizer")
                  or name in {"merges.txt", "vocab.json", "special_tokens_map.json"}]
@@ -48,6 +53,7 @@ def kaggle_replay():
             draft = AutoModelForCausalLM.from_pretrained(directory, local_files_only=True, dtype=torch.float16,
                                                        device_map={"": 0}, attn_implementation="sdpa").eval()
             accepted, proposed = 0, 0
+            matched = 0
             for record in report["references"]:
                 prompt = record["prompt"]
                 inputs = target_tokenizer.encode(target_prompt(target_tokenizer, prompt), add_special_tokens=False)
@@ -58,20 +64,30 @@ def kaggle_replay():
                                   oracle=GreedyOracle(record["token_ids"], report["eos_token_ids"]))
                 accepted += replay["accepted"]
                 proposed += replay["proposed"]
+                if validation:
+                    if replay["token_ids"] != record["token_ids"] or decode(target_tokenizer, record["token_ids"]) != record["text"]:
+                        raise ValueError(f"Replay or decoded text differs for {pair}/{record['prompt_id']}.")
+                    matched += 1
             rate = accepted / proposed if proposed else 0.0
-            delta = abs(rate - summary["acceptance"])
             results[pair] = dict(accepted=accepted, proposed=proposed, acceptance=rate,
-                                 live_acceptance=summary["acceptance"], delta=delta, passed=delta <= 0.005,
                                  recording_gpu=report["recording_gpu"], replay_gpu=gpu,
                                  git_sha=payload["git_sha"], draft_revision=draft_spec["revision"],
                                  target_revision=config["revision"])
-            print(f"{pair}: live={summary['acceptance']:.6f}, replay={rate:.6f}, delta={delta:.6f}", flush=True)
+            if validation:
+                results[pair].update(split="train/val", recording_run_id=payload["run_id"], target=target,
+                                     oracle_sha256=report["oracle_sha256"], checked_prompts=matched, passed=matched == 40)
+                print(f"{pair}: verified {matched} validation traces; replay acceptance={rate:.6f}", flush=True)
+            else:
+                delta = abs(rate - summary["acceptance"])
+                results[pair].update(live_acceptance=summary["acceptance"], delta=delta, passed=delta <= 0.005)
+                print(f"{pair}: live={summary['acceptance']:.6f}, replay={rate:.6f}, delta={delta:.6f}", flush=True)
             del draft
             torch.cuda.empty_cache()
-    destination = Path("smoke_replay.json")
+    destination = Path(result_name)
     destination.write_text(json.dumps(results, indent=2), encoding="utf-8")
     if not results or any(not row["passed"] for row in results.values()):
-        raise RuntimeError("The Kaggle smoke acceptance gate failed.")
+        raise RuntimeError("The Kaggle smoke replay failed.")
+    return results
 
 
 def batch_probe(model, tokenizer, rows, eos, max_tokens):
