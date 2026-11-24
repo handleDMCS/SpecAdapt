@@ -37,7 +37,7 @@ def status_of(api, kernel: str) -> str:
     return getattr(api.kernels_status(kernel).status, "name", "unknown").lower()
 
 
-def stream_events(api, owner: str, slug: str):
+def stream_events(api, owner: str, slug: str, read_timeout: float = 60):
     """Yield log lines from Kaggle's live session log; returns when the stream closes or idles."""
     from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionLogsStreamRequest
 
@@ -52,7 +52,7 @@ def stream_events(api, owner: str, slug: str):
         original_send = http._session.send
 
         def send(*args, **kwargs):
-            kwargs["timeout"] = (15, 60)
+            kwargs["timeout"] = (15, read_timeout)
             return original_send(*args, **kwargs)
 
         http._session.send = send
