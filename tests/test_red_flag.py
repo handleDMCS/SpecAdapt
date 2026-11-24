@@ -141,9 +141,7 @@ class FigureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = draw(Path(folder) / "run.png", "title", now_line, checks, verdict(checks), beats, job("p2"))
             self.assertGreater(path.stat().st_size, 20000)
-            self.assertEqual(path.read_bytes()[:8], b"PNG
-
-")
+            self.assertTrue(path.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a")))
 
 
 if __name__ == "__main__":
