@@ -56,3 +56,11 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - P2 smoke, P2, P1 and P4 bundle successfully. T1 fits for two epochs. T2 scores at epochs two and four on a four-epoch schedule, with a two-epoch schedule in smoke. Both tiers select by validation answer-token top-1 agreement and save the unmerged winners as safetensors.
 - Kaggle CPU suite passed 69/69 (`20261124T045042312564Z`). The pinned draft tokenizers fit every joined example in context, and both selected adapter checkpoints saved, reloaded and merged on tiny Llama models.
 - GPU-hours used 0. Iteration 3 starts with the P2 T4 smoke and its B1 gate of 2,610 accepted out of 13,938 proposed tokens.
+
+**Iteration 3 · LoRA first, smoke fired · 2026-11-24 · SMOKE RUNNING** (`7004468`)
+- `tier_order` in the job TOML (default `T1, T2`; a one-element list runs that tier only). `p2-smoke`, `p2`, `p1`, `p4` now run T2 before T1. Preflight checks only the listed tiers.
+- After each tier's replay, one live heartbeat line (not repeated by the keepalive): `phase=result tier=<T> acceptance= b1= gain_pp= math= code= instruction= summarization=`.
+- New `training/jobs/p2-lora.toml`: T2 only, lr `3e-4`, checkpoints 2 and 4, `max_minutes = 60`, otherwise identical to `p2`.
+- Kaggle CPU suite 72/72 (`20261124T050534261870Z`), including tier-order, short-path and result-line tests (the last builds T2 then T1 adapters on the tiny Llama).
+- Fired: P2 smoke `20261124T050647634040Z` (kernel `specadapt-p2-smoke`, about 15 min, B1 gate 2,610/13,938). Not fired: full `p2`, because the agent's submit was refused by a permission check; the command is in the session hand-off.
+- Open: fire `p2`; smoke verdict.
