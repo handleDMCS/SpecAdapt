@@ -64,3 +64,12 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - Kaggle CPU suite 72/72 (`20261124T050534261870Z`), including tier-order, short-path and result-line tests (the last builds T2 then T1 adapters on the tiny Llama).
 - Fired: P2 smoke `20261124T050647634040Z` (kernel `specadapt-p2-smoke`, about 15 min, B1 gate 2,610/13,938). Not fired: full `p2`, because the agent's submit was refused by a permission check; the command is in the session hand-off.
 - Open: fire `p2`; smoke verdict.
+
+**Iteration 5 · adaptive K on P2 · 2026-11-26 · FIRED** (`af62d20`)
+- `src/specadapt/adaptive_k.py`: entropy and logistic stopping policies (FP32 features `entropy`, `top1_prob`, `top1_top2_margin`; L2 logistic by Newton steps in numpy, JSON). `generate(policy, cache_k, trace)`, defaults unchanged; trace labels by decoded text length; the policy and trace paths never cut a `k_max` draft proposal. Every result now has `cache_by_match`.
+- `training/kaggle/k_policy.py`, `training/jobs/p2-k.toml`: pair-generic (pair, `c`, weight hash, gates, `same_tokenizer` all in the TOML); reuses `m1_combo`'s loading and replay loop (factored, not copied). The fixed `K = 3` gate arms double as arms B1 and T2.
+- Departures from the defaults: `max_minutes = 300` (estimate ~130 min: the K = 8 label pass over 1,040 prompts alone is ~50 min); B1's entropy thresholds come from B1's own K = 8 labels on 20 fit prompts per task; policy arms run with `cache_k = 8`, T2 fixed `K = 3` + M1 keeps `cache_k = 3`.
+- `kaggle_run` excludes `thesis/` and `notes/` from bundles. Kaggle CPU suite 102/102 (`20261126T142355623513Z`).
+- Fired: `20261126T142508996346Z`, kernel [specadapt-p2-k](https://www.kaggle.com/code/dungg1810/specadapt-p2-k), T4, about 130 min. Collect: `uv run python -m demo.kaggle_run --resume 20261126T142508996346Z`.
+- Iteration 7 launch: `uv run --locked python -m demo.kaggle_run training/kaggle/k_policy.py --detach --kernel <pair>-k --job training/jobs/<pair>-k.toml --dataset dungg1810/specadapt-train-inputs --kernel-source dungg1810/specadapt-<pair> --expected-minutes <m>`.
+- Open: the P2 verdict, then block 6 (P4 training can fire now beside this job).
