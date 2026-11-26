@@ -76,6 +76,5 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 
 **Iteration 6 · P1 and P4 LoRA training · 2026-11-26 · FIRED** (run by the agent on request; no code change)
 - P4 fired beside `p2-k`: `20261126T143216954422Z`, kernel [specadapt-p4](https://www.kaggle.com/code/dungg1810/specadapt-p4), about 90 min. Collect: `uv run python -m demo.kaggle_run --resume 20261126T143216954422Z`.
-- P1 is fired automatically by a local watcher as soon as `p2-k` or `p4` leaves the GPU (status reads every 2 min, plan's command, `--expected-minutes 40`). Its timestamp is printed in the session's watcher log; if the session died first, fire it by hand with the block 6 command.
-- At 14:32Z both `p2-k` and `p4` were still queued for a GPU.
+- P1 is staged locally as `20261126T144529500687Z` and fired from the cloud: CPU kernel [specadapt-p1-trigger](https://www.kaggle.com/code/dungg1810/specadapt-p1-trigger) (`20261126T144817395163Z`, `28e7f85`, `training/kaggle/fire_when_free.py`, private credentials dataset attached) reads the status of `p2-k` and `p4` every minute and pushes P1 when either leaves the GPU. Check run `20261126T144717676288Z` logged in and read both statuses; the key is absent from its outputs. Collect P1: `uv run python -m demo.kaggle_run --resume 20261126T144529500687Z`.
 - Open: collect all three, then the block 5 and block 6 "Next" tables.
