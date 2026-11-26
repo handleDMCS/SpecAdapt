@@ -73,3 +73,9 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - Fired: `20261126T142508996346Z`, kernel [specadapt-p2-k](https://www.kaggle.com/code/dungg1810/specadapt-p2-k), T4, about 130 min. Collect: `uv run python -m demo.kaggle_run --resume 20261126T142508996346Z`.
 - Iteration 7 launch: `uv run --locked python -m demo.kaggle_run training/kaggle/k_policy.py --detach --kernel <pair>-k --job training/jobs/<pair>-k.toml --dataset dungg1810/specadapt-train-inputs --kernel-source dungg1810/specadapt-<pair> --expected-minutes <m>`.
 - Open: the P2 verdict, then block 6 (P4 training can fire now beside this job).
+
+**Iteration 6 · P1 and P4 LoRA training · 2026-11-26 · FIRED** (run by the agent on request; no code change)
+- P4 fired beside `p2-k`: `20261126T143216954422Z`, kernel [specadapt-p4](https://www.kaggle.com/code/dungg1810/specadapt-p4), about 90 min. Collect: `uv run python -m demo.kaggle_run --resume 20261126T143216954422Z`.
+- P1 is fired automatically by a local watcher as soon as `p2-k` or `p4` leaves the GPU (status reads every 2 min, plan's command, `--expected-minutes 40`). Its timestamp is printed in the session's watcher log; if the session died first, fire it by hand with the block 6 command.
+- At 14:32Z both `p2-k` and `p4` were still queued for a GPU.
+- Open: collect all three, then the block 5 and block 6 "Next" tables.
