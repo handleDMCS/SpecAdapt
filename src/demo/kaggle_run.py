@@ -24,7 +24,9 @@ import zipfile
 from demo.kaggle_runtime import ARTIFACTS_DIR, write_result
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__", ARTIFACTS_DIR}
+EXCLUDED_DIRS = {".git", ".venv", "build", "results", "logs", "__pycache__", ARTIFACTS_DIR,
+                 # The write-up never travels to Kaggle.
+                 "thesis", "notes"}
 KERNEL_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")
 
 

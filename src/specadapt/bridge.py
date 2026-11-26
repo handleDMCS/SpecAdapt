@@ -121,10 +121,11 @@ class VocabularyBridge:
     cannot silently lose whitespace or reuse a mapping in a different context.
     """
 
-    def __init__(self, draft_tokenizer, target_tokenizer, k=3):
+    def __init__(self, draft_tokenizer, target_tokenizer, k=3, cache_k=None):
+        # k cuts each mapped draft proposal (None: never cut); cache_k is the continuation-cache length.
         self.draft, self.target, self.k = draft_tokenizer, target_tokenizer, k
         self.trie = TokenTrie()
-        self.continuations = ContinuationCache(k)
+        self.continuations = ContinuationCache(k if cache_k is None else cache_k)
         self.direct = {}
         target_vocab = target_tokenizer.get_vocab()
         special_ids = set(draft_tokenizer.all_special_ids)

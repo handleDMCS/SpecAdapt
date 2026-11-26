@@ -147,6 +147,21 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(SyntaxError):
             kaggle_run.build_submission(self.project, ["bad.py"], "test", "owner")
 
+    def test_bundle_never_carries_the_write_up(self):
+        import zipfile
+
+        self.script("training/job.py", "x = 1\n")
+        self.script("thesis/figures/make.py", "secret = 'write-up'\n")
+        self.script("thesis/config.toml", "a = 1\n")
+        self.script("notes/todo.py", "secret = 'write-up'\n")
+        source, _ = kaggle_run.build_submission(self.project, ["training/job.py"], "test", "owner")
+        encoded = re.search(r"b64decode\('([A-Za-z0-9+/=]+)'\)", source).group(1)
+        names = zipfile.ZipFile(io.BytesIO(base64.b64decode(encoded))).namelist()
+        self.assertIn("training/job.py", names)
+        self.assertFalse([name for name in names if name.startswith(("thesis/", "notes/"))], names)
+        with self.assertRaisesRegex(ValueError, "excluded directories"):
+            kaggle_run.build_submission(self.project, ["thesis/figures/make.py"], "test", "owner")
+
     def test_result_download_leaves_one_file_and_preserves_failure_status(self):
         submission = {"timestamp": "test", "scripts": []}
         legacy = {**submission, "status": "failed", "run_log": "traceback", "outputs": {

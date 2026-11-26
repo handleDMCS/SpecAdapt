@@ -20,7 +20,8 @@ class ComboTests(unittest.TestCase):
             select_subset(validation, 81)
 
     def test_summary_counts_and_rates(self):
-        prompt = dict(accepted=6, proposed=9, rounds=4, generated_tokens=10, draft_steps=9, cache_rounds=1)
+        prompt = dict(accepted=6, proposed=9, rounds=4, generated_tokens=10, draft_steps=9, cache_rounds=1,
+                      draft_tokens=9)
         per_prompt = [dict(prompt, task=task) for task in ("math", "code", "instruction", "summarization")]
         summary = arm_summary(per_prompt, 0.0623)
         self.assertEqual((summary["accepted"], summary["proposed"], summary["prompts"]), (24, 36, 4))
@@ -28,6 +29,8 @@ class ComboTests(unittest.TestCase):
         self.assertAlmostEqual(summary["tokens_per_round"], 2.5)
         self.assertAlmostEqual(summary["modeled_cost_per_token"], (16 + 0.0623 * 36) / 40)
         self.assertAlmostEqual(summary["cache_round_share"], 0.25)
+        self.assertAlmostEqual(summary["draft_steps_per_token"], 36 / 40)
+        self.assertAlmostEqual(summary["mean_k"], 36 / 12)
         self.assertAlmostEqual(summary["per_task"]["code"]["acceptance"], 2 / 3)
 
     def test_job_runs_four_arms_on_the_recorded_t2_weights(self):

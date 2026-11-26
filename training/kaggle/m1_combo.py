@@ -22,7 +22,7 @@ from training.kaggle.train_pair import (
 )
 
 ARMS = (("B1", "baseline"), ("B1", "m1"), ("T2", "baseline"), ("T2", "m1"))
-COUNTS = ("accepted", "proposed", "rounds", "generated_tokens", "draft_steps", "cache_rounds")
+COUNTS = ("accepted", "proposed", "rounds", "generated_tokens", "draft_steps", "cache_rounds", "draft_tokens")
 
 
 def select_subset(validation, per_task):
@@ -39,11 +39,14 @@ def select_subset(validation, per_task):
 
 def rates(counts, cost_ratio):
     """Acceptance, tokens per target call and modeled cost per token from summed counts."""
-    accepted, proposed, rounds, generated, draft_steps, cache_rounds = (counts[key] for key in COUNTS)
+    accepted, proposed, rounds, generated, draft_steps, cache_rounds, draft_tokens = (counts[key] for key in COUNTS)
+    draft_rounds = rounds - cache_rounds
     return dict(acceptance=accepted / proposed if proposed else 0.0,
                 tokens_per_round=generated / rounds if rounds else 0.0,
                 modeled_cost_per_token=(rounds + cost_ratio * draft_steps) / generated if generated else 0.0,
-                cache_round_share=cache_rounds / rounds if rounds else 0.0)
+                cache_round_share=cache_rounds / rounds if rounds else 0.0,
+                draft_steps_per_token=draft_steps / generated if generated else 0.0,
+                mean_k=draft_tokens / draft_rounds if draft_rounds else 0.0)
 
 
 def arm_summary(per_prompt, cost_ratio):
@@ -64,14 +67,14 @@ def find_weights(expected_sha256):
     return matching[0]
 
 
-def load_models(job, summary, progress):
+def load_assets(job, summary, progress):
+    """B1 and merged T2 drafters in FP16, both tokenizers, the target record, fit and validation rows."""
     progress.update("preflight", action="check_inputs")
     draft_key, target_key = PAIRS[job["pair"]]
     manifests = list(Path("/kaggle/input").rglob(MANIFEST_NAME))
     if len(manifests) != 1:
         raise ValueError("Attach exactly one private specadapt-train-inputs dataset.")
-    record, _, validation = load_target(manifests[0].parent, target_key)
-    rows = select_subset(validation, job["prompts_per_task"])
+    record, fit, validation = load_target(manifests[0].parent, target_key)
     weights = find_weights(job["t2_sha256"])
     plan = {entry["key"]: entry for entry in load_plan(Path("asset_plan.toml"))["models"]}
     draft_spec, target_spec = plan[draft_key], plan[target_key]
@@ -104,10 +107,6 @@ def load_models(job, summary, progress):
     draft_dir = snapshot_download(draft_spec["repo"], revision=draft_spec["revision"],
                                   allow_patterns=draft_spec["files"])
     draft_tokenizer = AutoTokenizer.from_pretrained(draft_dir, local_files_only=True)
-    for row in rows:
-        ids = target_tokenizer.encode(target_prompt(target_tokenizer, row["prompt"]), add_special_tokens=False)
-        if ids != row["input_ids"] or decode(target_tokenizer, row["token_ids"]) != row["text"]:
-            runtime.abort(f"Recorded target input or text differs for {row['prompt_id']}.")
 
     def load_draft(precision):
         return AutoModelForCausalLM.from_pretrained(draft_dir, local_files_only=True, dtype=precision,
@@ -123,23 +122,43 @@ def load_models(job, summary, progress):
         raise ValueError("Unexpected parameter names in the T2 adapter checkpoint.")
     trained.load_state_dict(state, strict=False)
     max_length = json.loads((Path(draft_dir) / "config.json").read_text())["max_position_embeddings"]
-    example = encode_example(draft_tokenizer, rows[0], max_length)
+    example = encode_example(draft_tokenizer, validation[0], max_length)
     summary["t2"] = dict(config=config, merge_error=checked_merge(trained, adapter, "T2", example))
     models = {"B1": load_draft(torch.float16), "T2": trained.to(dtype=torch.float16)}
-    oracles = [row_oracle(row, record["eos_token_ids"], MAX_NEW_TOKENS) for row in rows]
-    return models, draft_tokenizer, target_tokenizer, list(zip(rows, oracles))
+    return models, draft_tokenizer, target_tokenizer, record, fit, validation
 
 
-def replay_arm(model, draft_tokenizer, target_tokenizer, prompts, job, name, mode, progress):
+def with_oracles(rows, record, target_tokenizer):
+    """Check each row's recorded target input and text, and pair it with its oracle."""
+    for row in rows:
+        ids = target_tokenizer.encode(target_prompt(target_tokenizer, row["prompt"]), add_special_tokens=False)
+        if ids != row["input_ids"] or decode(target_tokenizer, row["token_ids"]) != row["text"]:
+            runtime.abort(f"Recorded target input or text differs for {row['prompt_id']}.")
+    return [(row, row_oracle(row, record["eos_token_ids"], MAX_NEW_TOKENS)) for row in rows]
+
+
+def load_models(job, summary, progress):
+    models, draft_tokenizer, target_tokenizer, record, _, validation = load_assets(job, summary, progress)
+    rows = select_subset(validation, job["prompts_per_task"])
+    return models, draft_tokenizer, target_tokenizer, with_oracles(rows, record, target_tokenizer)
+
+
+def replay_arm(model, draft_tokenizer, target_tokenizer, prompts, name, progress, on_prompt=None, **options):
+    """Oracle replay of one arm; options go to generate(). Aborts if any prompt leaves its trajectory."""
     per_prompt = []
     progress.update(f"{name}-replay", 0, len(prompts))
     for step, (row, oracle) in enumerate(prompts, 1):
-        data = generate(None, model, target_tokenizer, draft_tokenizer, row["prompt"], mode=mode, k=job["k"],
-                        same_tokenizer=job["pair"] == "P1", max_new_tokens=MAX_NEW_TOKENS, oracle=oracle)
+        data = generate(None, model, target_tokenizer, draft_tokenizer, row["prompt"],
+                        max_new_tokens=MAX_NEW_TOKENS, oracle=oracle, **options)
         if tuple(data["token_ids"]) != oracle.token_ids:
             runtime.abort(f"{name} replay departed from the recorded trajectory for {row['prompt_id']}.")
-        per_prompt.append(dict(task=row["task"], prompt_id=row["prompt_id"],
-                               **{key: data[key] for key in COUNTS}, replay_seconds=data["replay_seconds"]))
+        item = dict(task=row["task"], prompt_id=row["prompt_id"],
+                    **{key: data[key] for key in COUNTS}, replay_seconds=data["replay_seconds"])
+        if data["cache_by_match"]:
+            item["cache_by_match"] = data["cache_by_match"]
+        per_prompt.append(item)
+        if on_prompt is not None:
+            on_prompt(row, data)
         accepted = sum(item["accepted"] for item in per_prompt)
         proposed = sum(item["proposed"] for item in per_prompt)
         progress.update(f"{name}-replay", step, len(prompts), acceptance=accepted / proposed if proposed else 0.0)
@@ -153,7 +172,8 @@ def run(job, summary, progress):
     write_json(Path("summary.json"), summary)
     for tier, mode in ARMS:
         name = f"{tier}-{mode}"
-        per_prompt = replay_arm(models[tier], draft_tokenizer, target_tokenizer, prompts, job, name, mode, progress)
+        per_prompt = replay_arm(models[tier], draft_tokenizer, target_tokenizer, prompts, name, progress,
+                                mode=mode, k=job["k"], same_tokenizer=job["pair"] == "P1")
         summary["arms"][name] = arm_summary(per_prompt, job["cost_ratio"])
         Path("artifacts").mkdir(exist_ok=True)
         write_json(Path("artifacts") / f"{name}.json", per_prompt)
