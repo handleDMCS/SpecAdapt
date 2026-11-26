@@ -1,0 +1,33 @@
+# Iteration 6: submit the locally staged P1 training run once p2-k or p4 has left the GPU.
+# check_only = true only logs in and reads the two statuses once.
+check_only = false
+watch = ["dungg1810/specadapt-p2-k", "dungg1810/specadapt-p4"]
+staged_timestamp = "20261126T144529500687Z"
+script = "training/kaggle/train_pair.py"
+script_sha256 = "f7f7798596b2cbd7b2539305ba8f0d8f48ea8d717c9395e3ba2937d267a21200"
+job = "training/jobs/p1.toml"
+job_sha256 = "0f5852a8261f7f70bab7799f1ad56105b12316fa2ffd29b2822a31d56cd6b86e"
+poll_seconds = 60
+kaggle_version = "2.2.4"
+max_minutes = 600
+
+# build/submissions/20261126T144529500687Z/kernel-metadata.json
+[metadata]
+id = "dungg1810/specadapt-p1"
+title = "specadapt-p1"
+code_file = "submission.py"
+language = "python"
+kernel_type = "script"
+is_private = "true"
+enable_gpu = "true"
+enable_internet = "true"
+docker_image = "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461"
+docker_image_pinning_type = "original"
+machine_shape = "NvidiaTeslaT4"
+dataset_sources = [
+    "dungg1810/specadapt-llama-160m-73a094c7ba53",
+    "dungg1810/specadapt-llama-68m-fb17d0b612f6",
+    "dungg1810/specadapt-qwen-7b-de772c60d4c7",
+    "dungg1810/specadapt-vicuna-7b-f1bb17951a9c",
+    "dungg1810/specadapt-train-inputs",
+]
