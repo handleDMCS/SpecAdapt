@@ -1,0 +1,30 @@
+# Adaptive K on P4 (iteration 7): gates, labels, logistic stopping policy, sweeps and seven arms.
+# Weights: run 20261126T143216954422Z, attached with --kernel-source dungg1810/specadapt-p4.
+pair = "P4"
+t2_sha256 = "fa56c53f141833ca04eeb4c1a2ac6d2a6a6a03c145791b10625af5fa462b740d"
+# Stage 1 draft-to-target step cost ratio for P4.
+cost_ratio = 0.2315
+# Drafter-only arms re-tokenize across the vocabularies (P1 shares one tokenizer: true there).
+same_tokenizer = false
+# Fixed K of the gate and reference arms; the policy drafts between 1 and k_max tokens.
+k = 3
+k_max = 8
+# Tokens a continuation-cache hit proposes in the policy M1 arms.
+cache_k = 8
+fit_prompts_per_task = 180
+# B1's own fit labels, only for the percentiles of its entropy thresholds.
+b1_fit_prompts_per_task = 20
+sweep_prompts_per_task = 20
+percentiles = [10, 30, 50, 70, 90]
+l2 = 1.0
+seed = 42
+# P4's 160M drafter replays 2.9x slower than P2's in training; about 5 h expected.
+max_minutes = 480
+preflight_minutes = 5
+
+# From the P4 training run 20261126T143216954422Z, 320 validation prompts, fixed K = 3, mode baseline.
+[gate]
+b1_accepted = 21411
+b1_proposed = 89483
+t2_acceptance = 0.4047564305216267
+t2_tolerance_pp = 0.1

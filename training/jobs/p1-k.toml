@@ -1,0 +1,29 @@
+# Adaptive K on P1 (iteration 7): gates, labels, logistic stopping policy, sweeps and seven arms.
+# Weights: run 20261126T144529500687Z, attached with --kernel-source dungg1810/specadapt-p1.
+pair = "P1"
+t2_sha256 = "67959a571603d9be20842b019109b684b7a91e7caf8cf34ba0d1413be9a26787"
+# Stage 1 draft-to-target step cost ratio for P1.
+cost_ratio = 0.0575
+# Drafter-only arms re-tokenize across the vocabularies (P1 shares one tokenizer: true there).
+same_tokenizer = true
+# Fixed K of the gate and reference arms; the policy drafts between 1 and k_max tokens.
+k = 3
+k_max = 8
+# Tokens a continuation-cache hit proposes in the policy M1 arms.
+cache_k = 8
+fit_prompts_per_task = 180
+# B1's own fit labels, only for the percentiles of its entropy thresholds.
+b1_fit_prompts_per_task = 20
+sweep_prompts_per_task = 20
+percentiles = [10, 30, 50, 70, 90]
+l2 = 1.0
+seed = 42
+max_minutes = 180
+preflight_minutes = 5
+
+# From the P1 training run 20261126T144529500687Z, 320 validation prompts, fixed K = 3, mode baseline.
+[gate]
+b1_accepted = 19817
+b1_proposed = 79588
+t2_acceptance = 0.38732714202934865
+t2_tolerance_pp = 0.1
