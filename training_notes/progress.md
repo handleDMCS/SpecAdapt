@@ -78,3 +78,16 @@ Wave 1 test and training oracle recordings are complete for P1, P2, and P4. Kagg
 - P4 fired beside `p2-k`: `20261126T143216954422Z`, kernel [specadapt-p4](https://www.kaggle.com/code/dungg1810/specadapt-p4), about 90 min. Collect: `uv run python -m demo.kaggle_run --resume 20261126T143216954422Z`.
 - P1 is staged locally as `20261126T144529500687Z` and fired from the cloud: CPU kernel [specadapt-p1-trigger](https://www.kaggle.com/code/dungg1810/specadapt-p1-trigger) (`20261126T144817395163Z`, `28e7f85`, `training/kaggle/fire_when_free.py`, private credentials dataset attached) reads the status of `p2-k` and `p4` every minute and pushes P1 when either leaves the GPU. Check run `20261126T144717676288Z` logged in and read both statuses; the key is absent from its outputs. Collect P1: `uv run python -m demo.kaggle_run --resume 20261126T144529500687Z`.
 - Open: collect all three, then the block 5 and block 6 "Next" tables.
+
+**Iterations 5 and 6 · collected · 2026-11-27 · PASS**
+- P2 adaptive K `20261126T142508996346Z` (~105 min): gates exact (B1 18,316/98,317, T2 gap 0.0 pp). Cost/token vs B1 K=3 0.786: T0 0.695, T2 K=3 0.644, T2 K=3+M1 0.624, T2+entropy 0.620, T2+logistic 0.615, T2+logistic+M1 0.591 (acceptance 26.98%). Logistic+M1 cuts 5.3% vs K=3+M1 (block 5 Next: go to 7); logistic beats entropy narrowly.
+- Policy AUC fit 0.844 / val 0.831 (entropy alone 0.834 / 0.823), > 0.82 on every task. Ceiling (stop at first rejection) 0.549, 14.7% below T2 K=3: the policy captures about a third.
+- Cache rows in T2+logistic+M1: match length 2 accepted 14.9% vs 31.9% for draft rounds, so block 8's condition holds.
+- P4 training `20261126T143216954422Z` (~97 min): B1 23.93%, T2 40.48% (+16.55 pp), T1 30.19% (+6.26). P1 training `20261126T144529500687Z` (~22 min, fired by the cloud trigger after `p2-k`): B1 24.90%, T2 38.73% (+13.83 pp), T1 29.66% (+4.76). Both ready for 7.
+
+**Iteration 7 · full method on P1 and P4 · 2026-11-27 · FIRED** (`4bb505e`)
+- `training/jobs/p1-k.toml`, `p4-k.toml` from `p2-k.toml`: pair, `c`, T2 hash and gates from each training run; P1 `same_tokenizer = true`. No pair-specific code was left in `k_policy.py`.
+- Departure: P4 `max_minutes = 480` (not 300); its drafter replayed 2.9x slower than P2's in training, so about 5 h is expected.
+- `tests/test_p1_bridge.py`: two recorded P1 val rows replay losslessly in mode m1 with the pinned tokenizers (K=3, policy, trace). Kaggle CPU suite 105/105 (`20261127T021620431278Z`).
+- Fired: P4 `20261127T021748338460Z` ([specadapt-p4-k](https://www.kaggle.com/code/dungg1810/specadapt-p4-k), ~5 h) and P1 `20261127T021809418137Z` ([specadapt-p1-k](https://www.kaggle.com/code/dungg1810/specadapt-p1-k), ~80 min).
+- Open: collect both before the 17:00 cutoff; P4 is tight if Kaggle queues it.
